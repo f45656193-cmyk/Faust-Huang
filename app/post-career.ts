@@ -1,3 +1,5 @@
+import { buildFutureEpilogue } from "./future-epilogues.ts";
+
 export type PostSubject =
   | "语文"
   | "数学"
@@ -48,6 +50,17 @@ export type PostCareerInput = {
   peerFavor: number;
   nationalRank: number | null;
   nationalMedal?: string;
+  playerGender?: "male" | "female";
+  modules?: [number, number, number, number];
+  fantasyJoined?: boolean;
+  fantasyChats?: number;
+  relationships?: Array<{
+    name: string;
+    route: "dating" | "friend" | "broken-up" | "strained" | "crush";
+    bond: number;
+    trust: number;
+    conflict: number;
+  }>;
 };
 
 export type PostChoice = {
@@ -127,6 +140,9 @@ export type PostCareerState = {
     subtitle: string;
     body: string;
     epilogue: string;
+    futureRouteId?: string;
+    futureTitle?: string;
+    epilogueParagraphs?: string[];
     abnormal?: boolean;
   };
 };
@@ -497,18 +513,36 @@ function simulateGaokao(state: PostCareerState, seed: string): GaokaoResult {
     subjectNames.reduce((sum, subject) => sum + subjects[subject], 0),
   );
   const participants = 265000 + (hashSeed(`${seed}-gaokao-size`) % 260001);
-  const percentile = clamp(
-    1 / (1 + Math.exp((total - 525) / 34)),
-    0.00015,
-    0.995,
-  );
+  // 以公开的一分一段表为锚点，再按本种子的省份规模同比缩放。
+  // 这样位次与分数保持单调，也不会出现普通志愿上985却排十万名之后。
+  const rankAnchors: Array<[number, number]> = [
+    [700, 0.00035], [690, 0.00176], [675, 0.00874], [660, 0.0241],
+    [650, 0.03886], [640, 0.0578], [630, 0.082], [620, 0.1104],
+    [610, 0.1439], [600, 0.1806], [590, 0.22], [580, 0.2616],
+    [560, 0.3455], [540, 0.4307], [520, 0.5144], [500, 0.5954],
+    [450, 0.765], [400, 0.875], [300, 0.98],
+  ];
+  const provinceDifficultyShift =
+    (seededUnit(`${seed}-province-score-shift`) - 0.5) * 5;
+  const comparableScore = total + provinceDifficultyShift;
+  let percentile = rankAnchors[rankAnchors.length - 1][1];
+  for (let index = 0; index < rankAnchors.length - 1; index += 1) {
+    const [highScore, highPct] = rankAnchors[index];
+    const [lowScore, lowPct] = rankAnchors[index + 1];
+    if (comparableScore <= highScore && comparableScore >= lowScore) {
+      const t = (highScore - comparableScore) / (highScore - lowScore);
+      percentile = highPct + (lowPct - highPct) * t;
+      break;
+    }
+    if (comparableScore > rankAnchors[0][0]) percentile = rankAnchors[0][1];
+  }
   const provinceRank = Math.max(
     1,
     Math.round(
       participants *
         clamp(
           percentile +
-            (seededUnit(`${seed}-gaokao-rank-noise`) - 0.5) * 0.008,
+            (seededUnit(`${seed}-gaokao-rank-noise`) - 0.5) * 0.002,
           0.0001,
           0.999,
         ),
@@ -616,14 +650,17 @@ function regularAdmission(
   seed: string,
 ): AdmissionResult {
   const total = state.gaokao?.total ?? totalKnowledge(state);
+  const rankFraction = state.gaokao
+    ? state.gaokao.provinceRank / state.gaokao.participants
+    : 1;
   const candidates =
-    total >= 675
+    rankFraction <= 0.0025
       ? schoolPools.qingbei
-      : total >= 650
+      : rankFraction <= 0.025
         ? schoolPools["east-c9"]
-        : total >= 625
+        : rankFraction <= 0.055
           ? schoolPools["other-c9"]
-          : total >= 585
+          : rankFraction <= 0.12
             ? schoolPools["upper-985"]
             : [
                 { name: "临江师范大学", major: "生物科学" },
@@ -631,7 +668,7 @@ function regularAdmission(
                 { name: "云泽医科大学", major: "基础医学" },
               ];
   const school = candidates[hashSeed(`${seed}-regular-admission`) % candidates.length];
-  const admitted985 = total >= 585;
+  const admitted985 = rankFraction <= 0.12;
   return {
     admitted: true,
     school: school.name,
@@ -744,7 +781,11 @@ function resolveAdmission(
   };
 }
 
-function endingFor(state: PostCareerState, admission: AdmissionResult) {
+function endingFor(
+  state: PostCareerState,
+  admission: AdmissionResult,
+  input: PostCareerInput,
+) {
   const total = state.gaokao?.total;
   const international = state.nationalSelection.internationalMedal;
   const title =
@@ -761,17 +802,50 @@ function endingFor(state: PostCareerState, admission: AdmissionResult) {
             : total && total >= 625
               ? "回到教室之后"
               : "两条路都走过";
+  const future = buildFutureEpilogue({
+    ...input,
+    school: admission.school,
+    major: admission.major,
+    routeLabel: admission.routeLabel,
+    medalTier: state.medalTier,
+    nationalRank: state.nationalRank,
+    internationalMedal: international,
+  });
   return {
     title,
     subtitle: `${admission.school} · ${admission.major}`,
     body: `${admission.letter}${
       total ? ` 高考成绩最终停在${total.toFixed(1)}分。` : ""
     }`,
-    epilogue: international
-      ? `很多年后，人们仍会先提起你的国际赛${international}。你却更常想起的是高三教室里那张写满错题、被咖啡浸皱的卷子。`
-      : state.medalTier === "none"
-        ? "竞赛没有替你写好结局。它留下的只是一些看问题的方法，而你用剩下的时间重新把生活写了下去。"
-        : "奖牌被收进抽屉，录取通知书放在桌面。它们都是真的，却都不是这段人生唯一的解释。",
+    epilogue: future.paragraphs[0],
+    futureRouteId: future.routeId,
+    futureTitle: `${future.title} · ${future.subtitle}`,
+    epilogueParagraphs: future.paragraphs,
+  };
+}
+
+function abnormalEnding(
+  input: PostCareerInput,
+  state: PostCareerState,
+  kind: "pause" | "withdrawal",
+  base: { title: string; subtitle: string; body: string },
+) {
+  const future = buildFutureEpilogue({
+    ...input,
+    school: kind === "pause" ? "复学后的新起点" : "非传统教育路径",
+    major: "仍在形成的人生方向",
+    routeLabel: base.subtitle,
+    medalTier: state.medalTier,
+    nationalRank: state.nationalRank,
+    abnormal: kind,
+  });
+  return {
+    ...base,
+    epilogue: future.paragraphs[0],
+    futureRouteId: future.routeId,
+    futureTitle: `${future.title} · ${future.subtitle}`,
+    epilogueParagraphs: future.paragraphs,
+    abnormal: true,
   };
 }
 
@@ -989,7 +1063,9 @@ export function getPostScene(
         state.applicationRoute === "ordinary-strong"
           ? `你已选择普通强基，目前专项准备 ${state.strongPrep.toFixed(1)}。`
           : state.applicationRoute === "exceptional"
-            ? "你已提交竞赛破格申请，复试仍可能真正改变结果。"
+            ? state.applicationTarget === "qingbei"
+              ? "你已提交清北层级竞赛破格申请，仍需准备具有筛选作用的笔试与面试。"
+              : "你已提交非清北竞赛破格申请，金牌或真银牌通过审核后免笔试，接下来主要准备面试。"
             : "你把主要希望放在高考与普通志愿上。",
       choices: [
         {
@@ -999,8 +1075,14 @@ export function getPostScene(
         },
         {
           id: "second-strong",
-          title: "高考之外继续准备强基笔试",
-          hint: "校测更有竞争力，但会牺牲部分总分",
+          title:
+            state.applicationRoute === "exceptional" && state.applicationTarget !== "qingbei"
+              ? "高考之外准备强基面试"
+              : "高考之外继续准备强基笔试",
+          hint:
+            state.applicationRoute === "exceptional" && state.applicationTarget !== "qingbei"
+              ? "免笔试路线；提高表达与材料熟悉度，但仍会占用复习时间"
+              : "校测更有竞争力，但会牺牲部分总分",
         },
         {
           id: "second-health",
@@ -1070,11 +1152,16 @@ export function getPostScene(
     },
     "strong-written": {
       kicker: "STRONG FOUNDATION · WRITTEN",
-      title: "强基初试：笔试先决定谁有资格面试",
+      title:
+        state.applicationRoute === "exceptional"
+          ? "清北层级破格校测：笔试仍会真正筛人"
+          : "强基初试：笔试先决定谁有资格面试",
       lead:
         "数学和化学的题目比高考更陌生。报名人数很多，面试名单只按笔试排名截取。",
       detail:
-        "普通强基考生若未通过笔试，将直接退出强基流程，但仍可参加后续普通志愿录取。",
+        state.applicationRoute === "exceptional"
+          ? "金牌带来破格报名资格，但清北层级仍保留实质性笔试；未过线会回到普通志愿。"
+          : "普通强基考生若未通过笔试，将直接退出强基流程，但仍可参加后续普通志愿录取。",
       choices: [
         {
           id: "written-normal",
@@ -1204,20 +1291,18 @@ export function getPostScene(
       hint: "学校层级更高，审核与考核仍有风险",
     });
   }
-  if (
-    ["training-team", "gold", "true-silver", "silver", "bronze"].includes(
-      state.medalTier,
-    )
-  ) {
+  if (["training-team", "gold"].includes(state.medalTier)) {
     choices.push({
       id: "apply-exception-qingbei",
       title: "用国奖破格申请清北层级强基",
       hint: "高风险路线，笔试与面试会真正筛人",
     });
+  }
+  if (["training-team", "gold", "true-silver"].includes(state.medalTier)) {
     choices.push({
       id: "apply-exception-east",
       title: "用国奖破格申请华东C9层级强基",
-      hint: "金牌、真银牌更受欢迎；低奖牌仍可能落选",
+      hint: "金牌或真银牌通过破格审核后免笔试，直接进入面试与体测流程",
     });
     choices.push({
       id: "apply-exception-985",
@@ -1225,21 +1310,23 @@ export function getPostScene(
       hint: "更稳妥，也会放弃冲击顶尖高校的机会",
     });
   }
-  choices.push({
-    id: "apply-ordinary-east",
-    title: "报名华东C9层级普通强基",
-    hint: "先考数学、化学笔试，过线后才有面试资格",
-  });
-  choices.push({
-    id: "apply-ordinary-other",
-    title: "报名其他C9普通强基",
-    hint: "笔试仍有淘汰，竞争强度稍低",
-  });
-  choices.push({
-    id: "apply-ordinary-985",
-    title: "报名中上游985普通强基",
-    hint: "录取门槛较低，但仍需要校测发挥",
-  });
+  if (!["training-team", "gold", "true-silver"].includes(state.medalTier)) {
+    choices.push({
+      id: "apply-ordinary-east",
+      title: "报名华东C9层级普通强基",
+      hint: "先考数学、化学笔试，过线后才有面试资格",
+    });
+    choices.push({
+      id: "apply-ordinary-other",
+      title: "报名其他C9普通强基",
+      hint: "笔试仍有淘汰，竞争强度稍低",
+    });
+    choices.push({
+      id: "apply-ordinary-985",
+      title: "报名中上游985普通强基",
+      hint: "录取门槛较低，但仍需要校测发挥",
+    });
+  }
   choices.push({
     id: "apply-regular",
     title: "不报强基，只走普通高考志愿",
@@ -1557,15 +1644,24 @@ export function advancePostCareer(
   }
   if (state.stage === "second-review") {
     if (choiceId === "second-strong")
-      return update(state, {
-        stage: "mock2",
-        gains: { 数学: 7, 化学: 6, 物理: 2, 生物: 2, 语文: 0.5, 英语: 0.5 },
-        san: -9,
-        strongPrep: 18,
-        interviewPrep: 3,
-        result:
-          "强基题开始有了固定解法，高考语文和英语却几乎停在原地。你接受了这次交换。",
-      });
+      return state.applicationRoute === "exceptional" && state.applicationTarget !== "qingbei"
+        ? update(state, {
+            stage: "mock2",
+            gains: allGain(2.6),
+            san: -6,
+            interviewPrep: 14,
+            result:
+              "你没有去刷一场并不存在的破格笔试，而是反复核对材料、整理竞赛经历并练习面试表达。高考推进因此稍慢。",
+          })
+        : update(state, {
+            stage: "mock2",
+            gains: { 数学: 7, 化学: 6, 物理: 2, 生物: 2, 语文: 0.5, 英语: 0.5 },
+            san: -9,
+            strongPrep: 18,
+            interviewPrep: 3,
+            result:
+              "强基题开始有了固定解法，高考语文和英语却几乎停在原地。你接受了这次交换。",
+          });
     if (choiceId === "second-health")
       return update(state, {
         stage: "mock2",
@@ -1618,7 +1714,9 @@ export function advancePostCareer(
       state.applicationRoute === "ordinary-strong"
         ? "strong-written"
         : state.applicationRoute === "exceptional"
-          ? "strong-interview"
+          ? state.applicationTarget === "qingbei"
+            ? "strong-written"
+            : "strong-interview"
           : "admission";
     return {
       ...state,
@@ -1650,7 +1748,13 @@ export function advancePostCareer(
         : `强基笔试 ${result.written.toFixed(1)}分，排名第${result.writtenRank}/${result.writtenParticipants}，未达到约${result.writtenCutoff.toFixed(1)}分的复试线。你不能参加面试。`,
       history: [
         ...writtenState.history,
-        result.enteredInterview ? "普通强基笔试入围复试。" : "普通强基止步笔试。",
+        result.enteredInterview
+          ? state.applicationRoute === "exceptional"
+            ? "清北层级破格笔试入围面试。"
+            : "普通强基笔试入围复试。"
+          : state.applicationRoute === "exceptional"
+            ? "清北层级破格申请止步笔试。"
+            : "普通强基止步笔试。",
       ],
     };
   }
@@ -1674,7 +1778,7 @@ export function advancePostCareer(
   }
   if (state.stage === "admission") {
     const admission = resolveAdmission(state, seed);
-    const ending = endingFor(state, admission);
+    const ending = endingFor(state, admission, input);
     if (state.nationalSelection.selected) {
       return {
         ...state,
@@ -1694,7 +1798,7 @@ export function advancePostCareer(
       internationalMedal: result.medal,
     };
     const admission = state.admission ?? regularAdmission(state, seed);
-    const ending = endingFor({ ...state, nationalSelection }, admission);
+    const ending = endingFor({ ...state, nationalSelection }, admission, input);
     return {
       ...state,
       nationalSelection,
@@ -1709,15 +1813,12 @@ export function advancePostCareer(
       return {
         ...state,
         stage: "ending",
-        ending: {
+        ending: abnormalEnding(input, state, "pause", {
           title: "暂停键不是删除键",
           subtitle: "休学结局 · 保留学籍",
           body:
             "你没有参加这一届高考。医院的诊断、学校的休学手续和被清空的日程表一度让生活显得异常安静。",
-          epilogue:
-            "第二年春天，你重新路过实验楼。是否复学、是否继续学生物都还没有答案，但第一次，这些答案不必今天给出。",
-          abnormal: true,
-        },
+        }),
         lastResult: "你接受了休学和治疗安排。这一届高考不再继续。",
       };
     }
@@ -1737,24 +1838,18 @@ export function advancePostCareer(
       ...state,
       stage: "ending",
       ending: dropout
-        ? {
+        ? abnormalEnding(input, state, "withdrawal", {
             title: "离开那张排名表",
             subtitle: "退学结局 · 非传统教育路径",
             body:
               "你办理了退学。没有高考倒计时，也没有录取通知书，只有一段突然空出来、必须重新安排的生活。",
-            epilogue:
-              "后来你通过另一种方式继续学习。有人把这称作失败，你更愿意把它理解为：原来的轨道确实不再适合当时的你。",
-            abnormal: true,
-          }
-        : {
+          })
+        : abnormalEnding(input, state, "pause", {
             title: "这一届先到这里",
             subtitle: "休学结局 · 等待复学",
             body:
               "学校保留了你的学籍。高考被推迟一年，竞赛和排名也第一次从每天的生活中退了出去。",
-            epilogue:
-              "恢复没有明确的进度条。几个月后，你开始能完整读完一本与考试无关的书。",
-            abnormal: true,
-          },
+          }),
       lastResult: dropout ? "你办理了退学手续。" : "你正式办理休学，保留学籍。",
     };
   }

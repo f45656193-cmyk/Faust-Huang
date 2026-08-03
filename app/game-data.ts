@@ -7,6 +7,7 @@ export type GameEffect = {
   social?: number;
   mindset?: number;
   reasoning?: number;
+  problemSpeed?: number;
   experiment?: number;
   module1?: number;
   module2?: number;
@@ -78,6 +79,10 @@ export type GameEvent = {
   label: string;
   body: string[];
   quote?: string;
+  /** 视觉小说式事件：选择前不显示数值后果，结算后再揭示结果。 */
+  concealConsequences?: boolean;
+  /** 用于人物线与长剧情的版式标记。 */
+  visualNovel?: boolean;
   inspiration?: "原创" | "真实经历改写" | "公开资料梗改写";
   trigger: {
     earliestWeek: number;
@@ -483,7 +488,7 @@ export const weeklyActions: WeeklyAction[] = [
     title: "复盘错题",
     description: "整理近期错误，分清知识漏洞、审题失误和思路断裂。",
     cost: 1,
-    effects: { reasoning: 2, san: -1 },
+    effects: { reasoning: 1.4, san: -1 },
   },
   {
     id: "regular-study",
@@ -499,7 +504,7 @@ export const weeklyActions: WeeklyAction[] = [
     title: "找教练讨论",
     description: "带着具体问题去办公室，也让教练逐渐记住你。",
     cost: 1,
-    effects: { coachFavor: 3, social: 1, reasoning: 1 },
+    effects: { coachFavor: 3, social: 1, reasoning: 0.6 },
   },
   {
     id: "peer-time",
@@ -2134,6 +2139,102 @@ export const weeklySocialEvents: GameEvent[] = [
         preview: "SAN +2",
         result: "不是所有错误都必须立刻订正，尤其当你只是口渴。",
         effects: { san: 2 },
+      },
+    ],
+  },
+  {
+    id: "item-umbrella-rain",
+    phase: "weekly",
+    label: "道具事件 · 伞向哪边偏",
+    title: "晚自习结束时突然下雨，门口站着一名没有带伞的队友。",
+    body: ["你买的折叠伞勉强够两个人使用。走到宿舍只要十分钟，却足以让一路沉默或一场谈话都被记住。"],
+    inspiration: "原创",
+    trigger: { earliestWeek: 10, latestWeek: 86, requiredTags: ["shop:folding-umbrella"], probability: 0.46 },
+    choices: [
+      {
+        id: "umbrella-walk-together",
+        title: "一起走，把伞放在两人中间",
+        preview: "结果取决于当前关系，不提前显示具体变化",
+        result: "你们都湿了一边肩膀。回到宿舍以后，对方发来一句很普通的“到了”，却让这十分钟有了后续。",
+        effects: { peerFavor: 1.2, san: 0.8, tags: ["道具:雨中同行"] },
+      },
+      {
+        id: "umbrella-lend",
+        title: "把伞借给TA，自己等雨小一点",
+        preview: "结果取决于对方是否记得归还",
+        result: "第二天伞被擦干净放回桌边，伞柄多了一张写着你名字的小贴纸。",
+        effects: { peerFavor: 1, mindset: 0.4, tags: ["道具:伞柄姓名贴"] },
+      },
+      {
+        id: "umbrella-go-alone",
+        title: "说明自己今晚很累，先独自回去",
+        preview: "保护精力，但可能错过一次相处",
+        result: "你没有把每次偶遇都变成人际任务。雨声陪你走完了这一段路。",
+        effects: { san: 1.2, peerFavor: -0.2, tags: ["道具:雨夜边界"] },
+      },
+    ],
+  },
+  {
+    id: "item-gift-bag-choice",
+    phase: "weekly",
+    label: "道具事件 · 没写名字的礼袋",
+    title: "牛皮纸礼袋在抽屉里放了一周，你仍然没有写下收件人。",
+    body: ["送礼可能是感谢、试探或补偿。真正困难的不是把东西递出去，而是承认自己希望对方怎样理解。"],
+    inspiration: "原创",
+    trigger: { earliestWeek: 14, latestWeek: 92, requiredTags: ["shop:gift-bag"], probability: 0.42 },
+    choices: [
+      {
+        id: "gift-thank-teammate",
+        title: "送给最近帮助过自己的队友，只认真道谢",
+        preview: "不公开具体关系收益",
+        result: "对方先问是不是有什么事，听见“只是谢谢”以后才把礼袋收下。你们都松了一口气。",
+        effects: { peerFavor: 1.5, social: 0.3, tags: ["道具:礼物送达"] },
+      },
+      {
+        id: "gift-say-more",
+        title: "在卡片上写下比感谢更多一点的话",
+        preview: "可能拉近关系，也可能制造短暂尴尬",
+        result: "那段话没有给关系下定义，却让对方知道，你记得那些没有被别人看见的帮助。",
+        effects: { peerFavor: 1, san: -0.4, mindset: 0.4, tags: ["道具:礼物与未命名心意"] },
+      },
+      {
+        id: "gift-keep-empty",
+        title: "暂时不送，保留这个空袋子",
+        preview: "没有人际收益",
+        result: "有些礼物没有错过，只是你还不愿意让它替自己说话。",
+        effects: { san: 0.5, tags: ["道具:未送出的礼袋"] },
+      },
+    ],
+  },
+  {
+    id: "item-usb-backup",
+    phase: "weekly",
+    label: "道具事件 · 最终版_真的最终版",
+    title: "电脑突然死机时，你第一次庆幸买了那个旧U盘。",
+    body: ["里面既有自己的错题，也有来源复杂的讲义。备份能保护劳动，却不能替你判断哪些文件应该继续传播。"],
+    inspiration: "原创",
+    trigger: { earliestWeek: 16, latestWeek: 100, requiredTags: ["shop:data-usb"], probability: 0.45 },
+    choices: [
+      {
+        id: "usb-organize",
+        title: "按来源、版本和勘误重新整理",
+        preview: "耗费精力，但以后查找更稳定",
+        result: "你删掉三份重复的“最终版”，也给来源不明的资料加上警示。文件终于不再像一座随机生成的遗迹。",
+        effects: { reasoning: 0.35, problemSpeed: 0.2, san: -0.5, tags: ["道具:资料完成备份"] },
+      },
+      {
+        id: "usb-share-boundary",
+        title: "只保存自己的整理，不复制来源不明的内部文件",
+        preview: "没有直接学习收益",
+        result: "U盘空出不少容量。你第一次把资源边界也当成学习的一部分。",
+        effects: { mindset: 0.5, social: 0.3, tags: ["道具:资料边界"] },
+      },
+      {
+        id: "usb-save-all",
+        title: "先全部塞进去，以后再分类",
+        preview: "获得安全感，但问题被推迟",
+        result: "文件保住了，目录也彻底失控。至少这次，你没有因为一次死机丢掉整周笔记。",
+        effects: { san: 0.8, tags: ["道具:收藏即整理"] },
       },
     ],
   },

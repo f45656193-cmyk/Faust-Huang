@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   openingEvent,
   leaveMilestoneEvents,
@@ -15,7 +15,37 @@ import {
   type Textbook,
   type WeeklyAction,
 } from "./game-data";
-import { linkedEventCount, linkedWeeklyEvents } from "./event-library";
+import { linkedWeeklyEvents } from "./event-library";
+import {
+  communityAchievementConditions,
+  communityAchievementDefinitions,
+} from "./community-achievements";
+import {
+  applyRelationshipChoice,
+  defaultRelationship,
+  nextRelationshipStoryEvent,
+  normalizeRelationship,
+  relationshipLearningBoost,
+  relationshipRouteLabel,
+  settleRelationshipWeek,
+  type DeepRelationship,
+  type PlayerGender,
+} from "./relationship-content";
+import { nextRelationshipDailyEvent } from "./relationship-dailies";
+import { nextPersonalityDailyEvent } from "./relationship-personality-dailies";
+import { nextFantasyStoryEvent } from "./fantasy-content";
+import { nextAchievementStoryEvent } from "./achievement-events";
+import { keepsakeAtlasDataUrl } from "./keepsake-atlas-data";
+import {
+  displayKeepsake,
+  keepsakeById,
+  keepsakeDefinitions,
+  newlyUnlockedKeepsakes,
+  rarityLabels,
+  type KeepsakeContext,
+  type KeepsakeRarity,
+  type KeepsakeRecord,
+} from "./keepsakes";
 import {
   NATIONAL_EXPERIMENT_CUTOFF,
   isTrueSilverRank,
@@ -51,6 +81,7 @@ type Origin = {
     resilience: number;
     san: number;
     pocketMoney: number;
+    monthlyPocketMoney: number;
   };
   tags: string[];
 };
@@ -74,6 +105,7 @@ const origins: Origin[] = [
       resilience: 60,
       san: 74,
       pocketMoney: 180,
+      monthlyPocketMoney: 80,
     },
     tags: ["路线清晰", "竞赛耳濡目染", "期待压力"],
   },
@@ -95,6 +127,7 @@ const origins: Origin[] = [
       resilience: 57,
       san: 68,
       pocketMoney: 160,
+      monthlyPocketMoney: 65,
     },
     tags: ["高分光环", "重点培养", "尚未确认热爱"],
   },
@@ -116,6 +149,7 @@ const origins: Origin[] = [
       resilience: 58,
       san: 66,
       pocketMoney: 220,
+      monthlyPocketMoney: 75,
     },
     tags: ["资源丰富", "强者环绕", "队内竞争"],
   },
@@ -137,6 +171,7 @@ const origins: Origin[] = [
       resilience: 78,
       san: 84,
       pocketMoney: 100,
+      monthlyPocketMoney: 55,
     },
     tags: ["自主探索", "资源有限", "韧性较强"],
   },
@@ -158,6 +193,7 @@ const origins: Origin[] = [
       resilience: 54,
       san: 80,
       pocketMoney: 900,
+      monthlyPocketMoney: 180,
     },
     tags: ["选择丰富", "生活宽裕", "结果期待"],
   },
@@ -299,9 +335,12 @@ function simulateProvincialExam(
       0.82 + seededUnit(`${seed}-difficulty-${week}-${index}`) * 0.44;
     return { index, isLiterature, moduleIndex, strangeQuestion, difficulty };
   });
+  const paperWeirdness = seededUnit(`${seed}-paper-weirdness-${week}`);
+  const requiredSpeed = 42 + paperWeirdness * 13 + (literatureCount - 22) * 0.45;
   const examScore = (
     moduleAbilities: number[],
     reasoning: number,
+    problemSpeed: number,
     san: number,
     mindset: number,
     neglectWeeks: number,
@@ -322,11 +361,21 @@ function simulateProvincialExam(
         (0.86 + san * 0.0016) *
         (0.94 + mindset * 0.0008) *
         Math.max(0.52, 1 - neglectWeeks * 0.05);
+      const completionShare = clamp(
+        0.7 + problemSpeed / (requiredSpeed * 3.25),
+        0.7,
+        1,
+      );
+      const relativePosition = (question.index + 1) / questions.length;
+      const pacingFactor =
+        relativePosition <= completionShare
+          ? 1 - Math.max(0, relativePosition - 0.62) * Math.max(0, requiredSpeed - problemSpeed) / 95
+          : 0.12;
       const probability = clamp(
         (baseProbability -
           (question.strangeQuestion ? 0.11 : 0) +
           form) *
-          conditionFactor /
+          conditionFactor * pacingFactor /
           question.difficulty,
         0.055,
         0.91,
@@ -344,6 +393,7 @@ function simulateProvincialExam(
   const correctTotal = examScore(
     playerModules,
     stats.reasoning,
+    stats.problemSpeed,
     stats.san,
     stats.mindset,
     stats.competitionNeglectWeeks,
@@ -366,7 +416,14 @@ function simulateProvincialExam(
         (0.86 + stats.san * 0.0016) *
         (0.94 + stats.mindset * 0.0008) *
         Math.max(0.52, 1 - stats.competitionNeglectWeeks * 0.05) /
-        question.difficulty,
+        question.difficulty *
+        (((question.index + 1) / questions.length <=
+        clamp(0.7 + stats.problemSpeed / (requiredSpeed * 3.25), 0.7, 1))
+          ? 1 -
+            Math.max(0, (question.index + 1) / questions.length - 0.62) *
+              Math.max(0, requiredSpeed - stats.problemSpeed) /
+              95
+          : 0.12),
       0.055,
       0.91,
     );
@@ -416,10 +473,15 @@ function simulateProvincialExam(
           (seededUnit(`${seed}-province-reason-${week}-${index}`) - 0.5) *
             20,
       );
+      const problemSpeed = clamp(
+        latent * 0.76 + 9 +
+          (seededUnit(`${seed}-province-speed-${week}-${index}`) - 0.5) * 22,
+      );
       return round1(
         (examScore(
           modules,
           reasoning,
+          problemSpeed,
           58 + seededUnit(`${seed}-province-san-${week}-${index}`) * 34,
           52 + seededUnit(`${seed}-province-mind-${week}-${index}`) * 38,
           seededUnit(`${seed}-province-neglect-${week}-${index}`) < 0.12
@@ -516,9 +578,15 @@ function simulateNationalExam(
     (seededUnit(`${seed}-national-form-a-${week}`) +
       seededUnit(`${seed}-national-form-b-${week}`) -
       1) *
-    12;
+      12;
+  const theoryQuestionLoad = 88 + (hashSeed(`${seed}-national-load-${week}`) % 29);
+  const pacingFactor = clamp(
+    0.73 + stats.problemSpeed * 0.0037 - (theoryQuestionLoad - 88) * 0.0025,
+    0.7,
+    1.02,
+  );
   const literaturePerformance = clamp(
-    (16 + stats.reasoning * 0.58 + moduleAverage * 0.18) * condition +
+    (23 + stats.reasoning * 0.5 + moduleAverage * 0.18) * condition * pacingFactor +
       theoryForm +
       (seededUnit(`${seed}-national-lit-${week}`) - 0.5) * 10,
   );
@@ -563,13 +631,19 @@ function simulateNationalExam(
           (seededUnit(`${seed}-national-experiment-${week}-${index}`) - 0.5) *
             22,
       );
+      const speed = clamp(
+        latent * 0.78 + 8 +
+          (seededUnit(`${seed}-national-speed-${week}-${index}`) - 0.5) * 18,
+      );
       const form =
         (seededUnit(`${seed}-national-rival-form-a-${week}-${index}`) +
           seededUnit(`${seed}-national-rival-form-b-${week}-${index}`) -
           1) *
         11;
       const literature = clamp(
-        16 + reasoning * 0.58 + knowledge * 0.18 + form,
+        (23 + reasoning * 0.5 + knowledge * 0.18) *
+          clamp(0.73 + speed * 0.0037 - (theoryQuestionLoad - 88) * 0.0025, 0.7, 1.02) +
+          form,
       );
       const foundation = clamp(
         12 + knowledge * 0.65 + reasoning * 0.06 + form * 0.65,
@@ -666,6 +740,9 @@ function simulateNationalExam(
   const finalRank = qualifiedForExperiment
     ? 1 + competitorFinal.filter((score) => score > finalScore).length
     : theoryRank;
+  const experimentRank = qualifiedForExperiment
+    ? 1 + competitorExperiment.filter((score) => score > experimentRaw).length
+    : undefined;
   const medal = nationalMedalForRank(finalRank);
   return {
     attemptNumber,
@@ -680,6 +757,8 @@ function simulateNationalExam(
     finalScore,
     finalRank,
     medal,
+    experimentRank,
+    sanAtExam: stats.san,
   };
 }
 
@@ -693,6 +772,7 @@ function generateAssessmentRecap(
   nationalStage?: "theory" | "experiment",
   schoolStrength = 0.58,
   schoolParticipants = 680,
+  activeSchoolTeamSize = 12,
 ): AssessmentRecap {
   if (nationalAttempt && nationalStage === "theory") {
     return {
@@ -703,7 +783,7 @@ function generateAssessmentRecap(
         {
           name: "文献阅读（90%）",
           score: nationalAttempt.theoryRaw,
-          note: `理论T分 ${nationalAttempt.theoryT.toFixed(1)}`,
+          note: `理论T分 ${formatNumber(nationalAttempt.theoryT)}`,
         },
         {
           name: "基础综合（10%）",
@@ -858,10 +938,9 @@ function generateAssessmentRecap(
   const average =
     subjectScores.reduce((total, subject) => total + subject.score, 0) /
     subjectScores.length;
-  const participants =
-    assessment.title.includes("联赛")
-      ? 1200
-      : 42;
+  const participants = assessment.title.includes("联赛")
+    ? 1200
+    : Math.max(2, activeSchoolTeamSize);
   const rank = Math.max(
     1,
     Math.round(
@@ -886,6 +965,7 @@ type PlayerStats = {
   module3: number;
   module4: number;
   reasoning: number;
+  problemSpeed: number;
   experiment: number;
   experimentUnlocked: boolean;
   experimentModules: Record<
@@ -921,6 +1001,17 @@ type WeekRecord = {
   changes: Array<{ label: string; value: number }>;
   efficiency: number;
   fluctuation: number;
+  sanAfter?: number;
+  fixedActions?: Array<{ title: string; cost: number }>;
+  chosenActions?: Array<{ title: string; count: number; cost: number }>;
+  moments?: WeekMoment[];
+};
+
+type WeekMoment = {
+  kind: "opening" | "event" | "assessment";
+  title: string;
+  choice?: string;
+  result?: string;
 };
 
 type AssessmentRecap = {
@@ -964,6 +1055,10 @@ type ProvincialAttempt = {
   competitionStrength: number;
   competitorScores: number[];
   breakdown: Array<{ name: string; score: number; correct: number; total: number }>;
+  finalScore?: number;
+  finalRank?: number;
+  enteredTeam?: boolean;
+  finalAward?: string;
 };
 
 type NationalAttempt = {
@@ -979,6 +1074,8 @@ type NationalAttempt = {
   finalScore: number;
   finalRank: number | null;
   medal: NationalMedal;
+  experimentRank?: number;
+  sanAtExam?: number;
 };
 
 type DisplayEffectKey =
@@ -987,6 +1084,7 @@ type DisplayEffectKey =
   | "module3"
   | "module4"
   | "reasoning"
+  | "problemSpeed"
   | "experiment"
   | "social"
   | "mindset"
@@ -1003,6 +1101,7 @@ const effectLabels: Array<[DisplayEffectKey, string]> = [
   ["module3", "第三模块"],
   ["module4", "第四模块"],
   ["reasoning", "思辨"],
+  ["problemSpeed", "做题速率"],
   ["experiment", "实验"],
   ["social", "社交"],
   ["mindset", "心态"],
@@ -1022,7 +1121,11 @@ function applyEffects(stats: PlayerStats, effects: GameEffect) {
     if (key === "reasoning" && amount > 0) {
       const current = next.reasoning;
       amount *=
-        current < 45 ? 0.55 : current < 65 ? 0.38 : current < 80 ? 0.22 : 0.1;
+        current < 45 ? 0.38 : current < 65 ? 0.25 : current < 80 ? 0.13 : 0.05;
+    }
+    if (key === "problemSpeed" && amount > 0) {
+      const current = next.problemSpeed;
+      amount *= current < 48 ? 0.72 : current < 68 ? 0.48 : current < 82 ? 0.25 : 0.1;
     }
     if (key === "experiment" && amount > 0) {
       amount *= next.experiment < 60 ? 0.72 : next.experiment < 78 ? 0.45 : 0.22;
@@ -1046,8 +1149,31 @@ function applyEffects(stats: PlayerStats, effects: GameEffect) {
   return next;
 }
 
+function slackProjection(stats: PlayerStats | null, scheduledSlack: number) {
+  const dependenceLevel = (stats?.slackDependence ?? 0) + scheduledSlack;
+  return {
+    cost: Math.min(4, 1 + Math.floor(dependenceLevel / 3)),
+    san: round1(Math.max(2.5, 7 - dependenceLevel * 0.55)),
+    mindset: round1(-1 - dependenceLevel * 0.12),
+  };
+}
+
 function round1(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+function formatNumber(value: number) {
+  const rounded = round1(value);
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function itemSpriteStyle(atlasIndex: number): CSSProperties {
+  const column = atlasIndex % 8;
+  const row = Math.floor(atlasIndex / 8);
+  return {
+    backgroundImage: `url(${keepsakeAtlasDataUrl})`,
+    backgroundPosition: `${(column / 7) * 100}% ${(row / 7) * 100}%`,
+  };
 }
 
 function regularUnlockedScore(week: number) {
@@ -1077,11 +1203,7 @@ function projectedGaokaoScore(stats: PlayerStats, week: number) {
   );
 }
 
-type RivalRelationship = {
-  bond: number;
-  tension: number;
-  romance: number;
-};
+type RivalRelationship = DeepRelationship;
 
 type RetirementStage =
   | "before-school"
@@ -1096,7 +1218,16 @@ type RetirementFlow = {
   stage: RetirementStage;
   step: 0 | 1 | 2;
   resumeWeek?: number;
-  initiatedBy?: "self" | "family" | "coach";
+  initiatedBy?: "self" | "family" | "coach" | "eligibility";
+};
+
+type EventResultNotice = {
+  title: string;
+  choice: string;
+  result: string;
+  nextAction?:
+    | { type: "national-finish" }
+    | { type: "retirement-finish"; stage: RetirementStage };
 };
 
 type ShopItem = {
@@ -1104,6 +1235,8 @@ type ShopItem = {
   name: string;
   price: number;
   category: "补给" | "学习" | "玩具" | "特殊";
+  rarity: KeepsakeRarity;
+  atlasIndex: number;
   description: string;
   flavor: string;
   consumable: boolean;
@@ -1111,6 +1244,7 @@ type ShopItem = {
   bonusActionPoints?: number;
   learningBoost?: number;
   purchaseTag?: string;
+  effectVisible?: boolean;
 };
 
 type SaveSlotInfo = {
@@ -1125,6 +1259,8 @@ type AchievementDefinition = {
   id: string;
   title: string;
   description: string;
+  creditedBy?: string;
+  category?: string;
 };
 
 const achievementDefinitions: AchievementDefinition[] = [
@@ -1223,6 +1359,7 @@ const achievementDefinitions: AchievementDefinition[] = [
     title: "离开那张排名表",
     description: "离开原有学校轨道，进入非传统教育路径。",
   },
+  ...communityAchievementDefinitions,
 ];
 
 const shopItems: ShopItem[] = [
@@ -1231,48 +1368,89 @@ const shopItems: ShopItem[] = [
     name: "冰美式",
     price: 12,
     category: "补给",
-    description: "本周额外获得1行动点，但会额外消耗1点SAN。",
+    rarity: "green",
+    atlasIndex: 0,
+    description: "本周额外获得1行动点，同时消耗2点SAN；每周最多生效一次。",
     flavor: "家长认为白开水已经足够，因此拒绝报销。",
     consumable: true,
-    effects: { san: -1 },
+    effects: { san: -2 },
     bonusActionPoints: 1,
+    effectVisible: true,
   },
   {
     id: "chocolate",
     name: "抽屉里的巧克力",
     price: 10,
     category: "补给",
-    description: "立即恢复4点SAN和0.5点心态。",
+    rarity: "green",
+    atlasIndex: 1,
+    description: "立即恢复3点SAN和0.3点心态；同周重复食用收益不会继续提高。",
     flavor: "模考结束后的糖分通常比解析更快抵达大脑。",
     consumable: true,
-    effects: { san: 4, mindset: 0.5 },
+    effects: { san: 3, mindset: 0.3 },
+    effectVisible: true,
+  },
+  {
+    id: "energy-drink",
+    name: "蓝色功能饮料",
+    price: 26,
+    category: "补给",
+    rarity: "blue",
+    atlasIndex: 2,
+    description: "本周额外获得2行动点，但立即损失5点SAN与1点心态；每周最多生效一次。",
+    flavor: "把疲惫推迟并不等于把疲惫消灭。",
+    consumable: true,
+    effects: { san: -5, mindset: -1 },
+    bonusActionPoints: 2,
+    effectVisible: true,
   },
   {
     id: "mint",
     name: "薄荷糖与荧光笔套装",
     price: 24,
     category: "学习",
-    description: "本周学习效率提高10%，并恢复1点SAN。",
+    rarity: "green",
+    atlasIndex: 3,
+    description: "本周学习效率提高8%，并恢复0.5点SAN。",
     flavor: "颜色太多未必让笔记更清楚，但至少看起来像是准备充分。",
     consumable: true,
-    effects: { san: 1 },
-    learningBoost: 0.1,
+    effects: { san: 0.5 },
+    learningBoost: 0.08,
+    effectVisible: true,
   },
   {
     id: "earplugs",
     name: "隔音耳塞",
     price: 22,
     category: "补给",
-    description: "立即恢复2点SAN并稳定1点心态。",
+    rarity: "green",
+    atlasIndex: 4,
+    description: "立即恢复2点SAN并稳定0.5点心态。",
     flavor: "可以隔绝室友打游戏，却隔绝不了隔壁床背书。",
     consumable: true,
-    effects: { san: 2, mindset: 1 },
+    effects: { san: 2, mindset: 0.5 },
+    effectVisible: true,
+  },
+  {
+    id: "hardback-notebook",
+    name: "深绿色硬壳笔记本",
+    price: 30,
+    category: "学习",
+    rarity: "green",
+    atlasIndex: 5,
+    description: "启用后本周学习效率提高6%；写入计划后转为纪念物。",
+    flavor: "第一页写得最整齐，越往后越接近私人密码。",
+    consumable: true,
+    learningBoost: 0.06,
+    effectVisible: true,
   },
   {
     id: "plant-seeds",
     name: "一包来历不明的植物种子",
     price: 18,
     category: "特殊",
+    rarity: "blue",
+    atlasIndex: 7,
     description: "没有即时收益，解锁完整的窗台种植事件链。",
     flavor: "包装只写了“混合花种”，甚至没有注明到底是什么科。",
     consumable: false,
@@ -1283,6 +1461,8 @@ const shopItems: ShopItem[] = [
     name: "据说很灵的考试笔",
     price: 28,
     category: "玩具",
+    rarity: "green",
+    atlasIndex: 6,
     description: "没有稳定加成，解锁幸运笔、丢笔和迷信模考事件。",
     flavor: "老板坚称上一位使用者成功进了省队，但拒绝提供姓名。",
     consumable: false,
@@ -1293,6 +1473,8 @@ const shopItems: ShopItem[] = [
     name: "廉价野外观察盒",
     price: 55,
     category: "学习",
+    rarity: "blue",
+    atlasIndex: 41,
     description: "解锁校园观察、昆虫、雨夜和临时实验事件。",
     flavor: "附赠的塑料放大镜几乎只能把指纹放大。",
     consumable: false,
@@ -1303,6 +1485,8 @@ const shopItems: ShopItem[] = [
     name: "物种分类卡牌",
     price: 38,
     category: "玩具",
+    rarity: "white",
+    atlasIndex: 9,
     description: "解锁和队友打牌、争论分类及宿舍社交事件。",
     flavor: "规则写着寓教于乐，实际玩起来主要是在互相质疑分类依据。",
     consumable: false,
@@ -1313,6 +1497,8 @@ const shopItems: ShopItem[] = [
     name: "空的装片收纳盒",
     price: 42,
     category: "特殊",
+    rarity: "green",
+    atlasIndex: 29,
     description: "寒假实验启蒙后可触发装片收藏与实验事故事件。",
     flavor: "现在里面什么也没有，但你已经开始想象要放些什么。",
     consumable: false,
@@ -1323,10 +1509,72 @@ const shopItems: ShopItem[] = [
     name: "长得像烧杯的马克杯",
     price: 32,
     category: "玩具",
+    rarity: "white",
+    atlasIndex: 0,
     description: "解锁教练误会、实验室禁饮和咖啡溢出事件。",
     flavor: "刻度完全不准，唯一可靠的参数是容量很大。",
     consumable: false,
     purchaseTag: "shop:strange-mug",
+  },
+  {
+    id: "microbe-blindbox",
+    name: "微生物盲盒",
+    price: 20,
+    category: "玩具",
+    rarity: "white",
+    atlasIndex: 9,
+    description: "没有数值效果，只会在抽屉里留下一只造型奇怪的小生物。",
+    flavor: "老板说它是原核生物，你觉得这个结论缺少证据。",
+    consumable: false,
+    purchaseTag: "shop:microbe-blindbox",
+  },
+  {
+    id: "folding-umbrella",
+    name: "便利店折叠伞",
+    price: 36,
+    category: "特殊",
+    rarity: "green",
+    atlasIndex: 10,
+    description: "抵消一次普通淋雨事件，并为雨天同行剧情提供额外选择。",
+    flavor: "伞面很小，小到两个人使用时必须认真决定偏向哪边。",
+    consumable: false,
+    purchaseTag: "shop:folding-umbrella",
+  },
+  {
+    id: "shared-snack",
+    name: "双人分享装零食",
+    price: 22,
+    category: "补给",
+    rarity: "blue",
+    atlasIndex: 11,
+    description: "使用后恢复2点SAN，并小幅增加同学好感；每周最多生效一次。",
+    flavor: "包装写着两人份，实际分配从来没有那么公平。",
+    consumable: true,
+    effects: { san: 2, peerFavor: 0.8 },
+  },
+  {
+    id: "gift-bag",
+    name: "牛皮纸礼袋",
+    price: 16,
+    category: "特殊",
+    rarity: "green",
+    atlasIndex: 12,
+    description: "解锁一次正式赠礼选择；礼物是否合适仍由关系与性格决定。",
+    flavor: "纸袋没有写收件人，写名字比买下它困难得多。",
+    consumable: false,
+    purchaseTag: "shop:gift-bag",
+  },
+  {
+    id: "data-usb",
+    name: "16GB旧U盘",
+    price: 46,
+    category: "特殊",
+    rarity: "blue",
+    atlasIndex: 13,
+    description: "保存一次资料事故中的文件，并参与幻想乡档案支线。",
+    flavor: "容量不大，文件夹名称却从“最终版”排到了“真的最终版3”。",
+    consumable: false,
+    purchaseTag: "shop:data-usb",
   },
 ];
 
@@ -1343,6 +1591,19 @@ function weekHeadline(week: number, effects: GameEffect) {
   if (studyGain >= 18) return "这是一周扎实、也有些过载的推进。";
   if (week % 4 === 0) return "月末复盘：你的路线正在逐渐成形。";
   return "日历翻过一页，积累还没有立刻显出形状。";
+}
+
+function summarizeChosenActions(actions: WeeklyAction[]) {
+  const summaries = new Map<string, { title: string; count: number; cost: number }>();
+  actions.forEach((action) => {
+    const current = summaries.get(action.title);
+    summaries.set(action.title, {
+      title: action.title,
+      count: (current?.count ?? 0) + 1,
+      cost: (current?.cost ?? 0) + action.cost,
+    });
+  });
+  return [...summaries.values()];
 }
 
 type WeekPhase = {
@@ -1982,7 +2243,9 @@ function makeBookAction(
             : "用题目暴露漏洞。压力最大，但能力增长没有次数上限。",
     cost: isNotes ? 2 : 1,
     effects: {
-      reasoning: mode === "practice" ? 2.2 : isNotes ? 0.8 : 0.3,
+      reasoning: mode === "practice" ? 0.9 : isNotes ? 0.45 : 0.18,
+      problemSpeed:
+        mode === "practice" ? 2.4 : isNotes ? 0.45 : mode === "review-notes" ? 0.7 : 0.35,
       san:
         mode === "practice" ? -3 : isNotes ? -2 : mode === "review-notes" ? -0.5 : -1,
     },
@@ -2470,7 +2733,7 @@ function makeEvaluationDraftEvent(attempt: ProvincialAttempt): GameEvent {
     id: `provincial-${attempt.attemptNumber}-evaluation-draft`,
     phase: "exam",
     label: "省赛流程 · 答案评议稿",
-    title: `评议稿公布：重新估分 ${attempt.draftScore.toFixed(1)} 分。`,
+    title: `评议稿公布：重新估分 ${formatNumber(attempt.draftScore)} 分。`,
     body: [
       `机构答案经过三周争议后，部分题目接受了新答案，也有题目被建议删除。重新计算后，你的暂估排名约为全省第 ${attempt.draftRank} 名。`,
       attempt.appealDelta > 0
@@ -2536,16 +2799,22 @@ function makeOfficialResultEvent(
       ? `省队线公布：全省第 ${finalRank} 名，进入省队。`
       : `最终排名：全省第 ${finalRank} 名，${award}。`,
     body: [
-      `最终有效得分 ${finalScore.toFixed(1)}。本届省一截止第 ${attempt.firstPrizeEnd} 名，省二截止第 ${attempt.secondPrizeEnd} 名，省三截止第 ${attempt.thirdPrizeEnd} 名。`,
+      `最终有效得分 ${formatNumber(finalScore)}。本届省一截止第 ${attempt.firstPrizeEnd} 名，省二截止第 ${attempt.secondPrizeEnd} 名，省三截止第 ${attempt.thirdPrizeEnd} 名。`,
       entersTeam
         ? `本届省队共 ${attempt.teamPlaces} 人。你的名字出现在名单中，等待期终于有了明确方向。`
-        : `本届省队共 ${attempt.teamPlaces} 人。省队线与奖项线是两回事，接下来仍要决定是否使用第二次参赛机会。`,
+        : attempt.attemptNumber === 1
+          ? `本届省队共 ${attempt.teamPlaces} 人。省队线与奖项线是两回事，接下来仍要决定是否使用第二次参赛机会。`
+          : `本届省队共 ${attempt.teamPlaces} 人。两次参赛机会已经用完，竞赛主线将在离队与回班交接后强制结束。`,
     ],
     trigger: { earliestWeek: 1, latestWeek: 104 },
     choices: [
       {
         id: `record-official-${attempt.attemptNumber}`,
-        title: entersTeam ? "确认名单，准备国赛阶段" : "记录结果，继续选择后续路线",
+        title: entersTeam
+          ? "确认名单，准备国赛阶段"
+          : attempt.attemptNumber === 2
+            ? "确认最后一次联赛结果，开始离队交接"
+            : "记录结果，继续选择后续路线",
         preview: entersTeam
           ? "解锁省队与国赛流程 · 教练好感 +5"
           : `${award} · 后续可继续竞赛或回归常规`,
@@ -2555,7 +2824,11 @@ function makeOfficialResultEvent(
         effects: {
           coachFavor: entersTeam ? 5 : award === "省一等奖" ? 2 : -1,
           mindset: entersTeam ? 3 : -1,
-          tags: [outcomeTag],
+          tags: [
+            outcomeTag,
+            `第${attempt.attemptNumber}次省赛-${award}`,
+            `第${attempt.attemptNumber}次省赛-最终名单确认`,
+          ],
         },
       },
     ],
@@ -2661,7 +2934,7 @@ function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
       ? `理论第 ${attempt.theoryRank} 名：进入前240，获得实验考试资格。`
       : `理论第 ${attempt.theoryRank} 名：未进入前240。`,
     body: [
-      `理论原始表现 ${attempt.theoryRaw.toFixed(1)}，换算T分 ${attempt.theoryT.toFixed(1)}。排名在当晚公布，走廊里不断有人刷新名单。`,
+      `理论原始表现 ${formatNumber(attempt.theoryRaw)}，换算T分 ${formatNumber(attempt.theoryT)}。排名在当晚公布，走廊里不断有人刷新名单。`,
       attempt.qualifiedForExperiment
         ? "你的名字出现在实验分组表中。第二天上午两门、下午两门，四个板块将占满整整一天。"
         : "你的国赛考试部分到此结束。实验考场仍会照常开放，但名单上没有你的考号。",
@@ -2738,7 +3011,7 @@ function makeNationalAwardEvent(attempt: NationalAttempt): GameEvent {
     body: [
       "上午的礼堂按照名次倒序念出名单。每次停顿，都有人握紧手里的代表队证件。",
       attempt.qualifiedForExperiment
-        ? `理论T分 ${attempt.theoryT.toFixed(1)}，实验T分 ${attempt.experimentT.toFixed(1)}；最终按理论30%与实验70%合成为 ${attempt.finalScore.toFixed(1)}。${
+        ? `理论T分 ${formatNumber(attempt.theoryT)}，实验T分 ${formatNumber(attempt.experimentT)}；最终按理论30%与实验70%合成为 ${formatNumber(attempt.finalScore)}。${
             isTrueSilver ? " 你位于151—240名的“真银牌”区间。" : ""
           }`
         : `理论排名第 ${attempt.theoryRank}，未取得实验考试资格；该名次直接进入最终奖牌序列，你获得${attempt.medal}。`,
@@ -2893,28 +3166,53 @@ function rivalSnapshot(rival: Rival, seed: string, week: number) {
   };
 }
 
+function rivalStrengthBand(level: number) {
+  if (level < 35) return "仍在搭建基础";
+  if (level < 50) return "校内竞争阶段";
+  if (level < 64) return "省奖竞争阶段";
+  if (level < 77) return "省队竞争阶段";
+  if (level < 88) return "国赛竞争阶段";
+  return "全国顶尖阶段";
+}
+
 function seededRivalIdentity(rival: Rival, seed: string) {
-  if (!rival.scope.startsWith("school")) {
-    return {
-      name: rival.name,
-      personality: rival.personality,
-      studyStyle: rival.studyStyle,
-      temperament: "steady",
-    };
-  }
+  const token = hashSeed(`${seed}-identity-${rival.id}`);
+  const rivalIndex = Math.max(0, rivals.findIndex((item) => item.id === rival.id));
+  const gender = (Math.floor(token / 47) % 2 === 0
+    ? "male"
+    : "female") as "male" | "female";
   const surnames = [
-    "沈", "唐", "许", "乔", "周", "林", "程", "顾", "陆", "宋",
-    "谢", "罗", "江", "叶", "苏", "闻", "白", "何", "温", "夏",
-    "陈", "蒋", "段", "梁", "陶", "裴", "孟", "钟", "宁", "简",
-    "欧阳", "司徒",
+    "王", "李", "张", "刘", "陈", "杨", "黄", "赵", "吴", "周",
+    "徐", "孙", "马", "朱", "胡", "郭", "何", "高", "林", "罗",
+    "郑", "梁", "谢", "宋", "唐", "许", "韩", "冯", "邓", "曹",
+    "彭", "曾", "肖", "田", "董", "潘", "袁", "蔡", "蒋", "余",
+    "杜", "叶", "程", "苏", "魏", "吕", "丁", "任", "沈", "姚",
+    "卢", "姜", "崔", "钟", "谭", "陆", "汪", "范", "金", "石",
+    "廖", "贺", "夏", "韦", "傅", "方", "白", "邹", "孟", "熊",
+    "秦", "邱", "江", "尹", "薛", "闫", "段", "雷", "侯", "龙",
+    "欧阳",
   ];
-  const givenNames = [
-    "砚", "榆", "澄", "蘅", "序", "遥", "朔", "葵", "珩", "野",
-    "行知", "望舒", "令仪", "景明", "闻川", "清和", "予安", "叙白",
-    "栖迟", "谨言", "牧野", "照临", "知遥", "长夏", "星回", "与时",
-    "见山", "既白", "南乔", "言蹊", "观澜", "时雨", "弥生", "千帆",
-    "若谷", "青梧", "元嘉", "砚秋", "昭野", "知微", "小满", "屿川",
+  const maleGivenNames = [
+    "浩宇", "宇航", "子轩", "俊杰", "嘉豪", "宇辰", "浩然", "博文",
+    "皓轩", "明宇", "天宇", "子豪", "奕辰", "嘉诚", "志远", "睿哲",
+    "泽宇", "俊宇", "文博", "晨阳", "启航", "思源", "承宇", "振宇",
+    "彦博", "明轩", "昊宇", "嘉伟", "子涵", "凯文", "文杰", "佳乐",
+    "宇恒", "俊豪", "浩轩", "梓睿", "明哲", "嘉铭", "泽楷", "皓然",
+    "建华", "俊驰", "致远", "卓然", "一鸣", "睿阳", "晨浩", "景程",
+    "彦辰", "正阳", "博宇", "嘉佑", "修远", "逸凡", "昱辰", "思远",
+    "承泽", "文昊", "泽林", "宇泽",
   ];
+  const femaleGivenNames = [
+    "欣怡", "雨桐", "梓涵", "佳琪", "思妍", "语彤", "可欣", "雅雯",
+    "晓彤", "诗涵", "子涵", "心怡", "佳宁", "雨欣", "婉婷", "嘉怡",
+    "思琪", "怡然", "欣妍", "依琳", "晨曦", "嘉宁", "语欣", "思涵",
+    "雨萱", "若涵", "昕怡", "梦琪", "佳怡", "晓雯", "静怡", "雨婷",
+    "思雨", "欣然", "嘉慧", "雅婷", "可馨", "子晴", "佳颖", "晓琳",
+    "文静", "思佳", "雨晴", "嘉欣", "心悦", "雅琪", "婧怡", "紫涵",
+    "慧敏", "佳雯", "思颖", "雨菲", "欣悦", "晓晴", "嘉敏", "诗雨",
+    "梦婷", "语晴", "思宁", "欣桐",
+  ];
+  const givenNames = gender === "male" ? maleGivenNames : femaleGivenNames;
   const personalities = [
     "话不多，但一旦讨论问题就会追问到证据链闭合",
     "健谈、消息灵通，很快能和不同年级的人熟悉起来",
@@ -2931,11 +3229,11 @@ function seededRivalIdentity(rival: Rival, seed: string) {
     "常用口头讲题检验理解，一旦讲不清就回教材查机制。",
     "学习时间不算最长，却很擅长在模考后找出高收益漏洞。",
   ];
-  const token = hashSeed(`${seed}-identity-${rival.id}`);
   return {
-    name: `${surnames[token % surnames.length]}${
+    name: `${surnames[(token + rivalIndex * 17) % surnames.length]}${
       givenNames[
-        (Math.floor(token / 7) + hashSeed(rival.id)) % givenNames.length
+        (Math.floor(token / 7) + hashSeed(rival.id) + rivalIndex * 13) %
+          givenNames.length
       ]
     }`,
     personality:
@@ -2949,12 +3247,27 @@ function seededRivalIdentity(rival: Rival, seed: string) {
       "competitive",
       "curious",
     ][Math.floor(token / 13) % 6],
+    personalityKey: ([
+      "reserved",
+      "warm",
+      "competitive",
+      "playful",
+      "curious",
+    ] as const)[Math.floor(token / 31) % 5],
+    innerConflictKey: ([
+      "abandonment",
+      "burden",
+      "achievement",
+      "distance",
+      "caretaking",
+      "family",
+    ] as const)[Math.floor(token / 53) % 6],
+    gender,
   };
 }
 
 function seedRivalText(text: string, seed: string) {
   return rivals
-    .filter((rival) => rival.scope.startsWith("school"))
     .reduce(
       (value, rival) =>
         value.replaceAll(rival.name, seededRivalIdentity(rival, seed).name),
@@ -3148,6 +3461,79 @@ function retirementScene(
   choices: RetirementSceneChoice[];
 } {
   const base = retirementStageCopy[flow.stage];
+  if (flow.stage === "second-failure") {
+    if (flow.step === 0) {
+      return {
+        label: "竞赛资格结束 · 第二次联赛未进省队",
+        title: "两次参赛机会已经用完，这不是一道还能选择“继续竞赛”的题。",
+        body: [
+          "最终省队名单公布后，教练把你的名字从下一阶段训练表里划掉。并不是你主动认输，而是高中阶段的联赛机会已经全部结束。",
+          "接下来仍要处理资料、回班和常规缺口，但高三不会再开放竞赛学习行动。",
+        ],
+        choices: [
+          {
+            id: "second-failure-confirm-end",
+            title: "确认结果，开始办理离队与回班",
+            preview: "强制结束竞赛主线 · 进入交接",
+            result: "你把最后一次成绩单收进文件夹。竞赛生涯至此结束，接下来要谈的是怎样回去，而不是还能不能再考一次。",
+            action: "advance",
+            effects: { san: -3, mindset: -2 },
+          },
+        ],
+      };
+    }
+    if (flow.step === 1) {
+      return {
+        label: "被迫退赛 · 回班交接",
+        title: "教练、家长和班主任开始讨论你落下的常规课程。",
+        body: [
+          "教练的语气可能冷淡，也可能带着遗憾，但训练名额和实验安排已经不再包括你。家长更关心的是常规还剩多少、回班后从哪一章补起。",
+          "你可以决定怎样完成告别，却不能把已经耗尽的参赛资格重新变成第三次机会。",
+        ],
+        choices: [
+          {
+            id: "second-failure-orderly-handover",
+            title: "整理笔记与资料，认真完成交接",
+            preview: "同学好感 +1 · 常规 +5 · SAN -2",
+            result: "你把公共资料留给还在队里的学弟学妹，也请班主任列出了第一轮补课清单。桌面被清空以后，事情终于有了边界。",
+            action: "advance",
+            effects: { peerFavor: 1, academics: 5, san: -2 },
+          },
+          {
+            id: "second-failure-leave-quietly",
+            title: "不再复盘竞赛，先回班把生活接上",
+            preview: "SAN +1 · 心态 -2 · 教练好感 -3",
+            result: "你没有参加最后一次训练复盘。教练对此不满，但班级课表从第二天起重新占满了你的时间。",
+            action: "advance",
+            effects: { san: 1, mindset: -2, coachFavor: -3 },
+          },
+        ],
+      };
+    }
+    return {
+      label: "被迫退赛 · 竞赛生涯结束",
+      title: "竞赛教室的座位空了出来，高三常规线从这里开始。",
+      body: [
+        "这次没有“再给自己四周”的按钮。第二次联赛结果已经把竞赛主线封口，之后的学习、强基与高考都会按退赛后的经历继续。",
+      ],
+      choices: [
+        {
+          id: "second-failure-return-class",
+          title: "正式离队，进入高三常规学习",
+          preview: "结束竞赛主线 · 开始回班与高考流程",
+          result: "你抱着书走回原来的班级。下一张要面对的成绩单不再是联赛排名，而是六科总分。",
+          action: "retire",
+          effects: {
+            academics: 5,
+            san: -1,
+            mindset: -2,
+            coachFavor: -4,
+            tags: ["已退赛", "第二次省赛后被迫退赛"],
+          },
+        },
+      ],
+    };
+  }
   if (flow.step === 0) {
     if (flow.initiatedBy && flow.initiatedBy !== "self") {
       const fromCoach = flow.initiatedBy === "coach";
@@ -3282,28 +3668,24 @@ function retirementScene(
   }
   return {
     label: "退赛协商 · 最终决定",
-    title:
-      flow.stage === "second-failure"
-        ? "竞赛经历在这里结束，接下来要面对的是怎样回到普通课表。"
-        : "所有意见都已经听过，最后仍需要你亲自确认。",
+    title: "所有意见都已经听过，最后仍需要你亲自确认。",
     body: [
       "留下不会保证下一次成功，离开也不会让常规缺口立刻消失。",
-      "确认退赛后将进入独立的常规学习结局页；高三与高考流程会在后续版本继续补全。",
+      "确认退赛后将进入回班、高三、强基与高考流程；这段竞赛经历也会继续影响最终录取和成年后的生活。",
     ],
     choices: [
       {
         id: "retire-confirm-final",
-        title:
-          flow.stage === "second-failure" ? "整理竞赛资料，正式回班" : "仍然决定退赛",
+        title: "仍然决定退赛",
         preview: "结束竞赛路线 · 进入“您已退赛”页面",
         result: "你最后一次整理竞赛教室里的位置，把仍想保留的笔记装进书包。",
         action: "retire",
         effects: {
-          academics: flow.stage === "second-failure" ? 5 : 2,
-          coachFavor: flow.stage === "second-failure" ? -4 : -8,
-          familySupport: flow.stage === "second-failure" ? -0.5 : -2,
+          academics: 2,
+          coachFavor: -8,
+          familySupport: -2,
           mindset: flow.stage === "after-medal" ? -1 : -3,
-          san: flow.stage === "second-failure" ? -1 : -4,
+          san: -4,
           tags: ["已退赛"],
         },
       },
@@ -3325,7 +3707,63 @@ function makeTeammateDepartureEvent(
   activeTeamSize: number,
   initialTeamSize: number,
   retiredRivalIds: string[],
+  calendar: ReturnType<typeof calendarFor>,
 ): GameEvent | null {
+  const waveBases = [23, calendar.firstExamWeek + 4, 47, calendar.secondExamWeek + 4];
+  const waveWeek = waveBases.find(
+    (baseWeek, index) =>
+      targetWeek === baseWeek + 1 + (hashSeed(`${seed}-wave-week-${index}`) % 2),
+  );
+  if (waveWeek !== undefined && activeTeamSize >= 2) {
+    const leaving = Math.min(
+      activeTeamSize - 1,
+      2 + (hashSeed(`${seed}-wave-size-${targetWeek}`) % 4),
+    );
+    const after = Math.max(1, activeTeamSize - leaving);
+    const afterExam =
+      targetWeek > calendar.firstExamWeek &&
+      Math.abs(targetWeek - calendar.firstExamWeek) <= 7 ||
+      targetWeek > calendar.secondExamWeek &&
+      Math.abs(targetWeek - calendar.secondExamWeek) <= 7;
+    return {
+      id: `teammate-wave-${leaving}-${targetWeek}`,
+      phase: "weekly",
+      label: afterExam ? "队伍变化 · 联赛后的退赛潮" : "队伍变化 · 成绩节点后的退赛潮",
+      title: afterExam
+        ? `名单与估分逐渐明朗，几个人在同一周收起了竞赛书。`
+        : `期末排名贴出后，竞赛教室突然空了一排。`,
+      body: [
+        afterExam
+          ? "有人认为下一次机会仍值得赌，有人的家长已经替他算完常规缺口。退赛不是集体决定，却集中发生在结果最刺眼的几天。"
+          : "班主任、家长和教练分别约谈了不同的人。理由并不相同：成绩、作息、政策和长期疲惫，最后却都指向离开。",
+        `这一周共有 ${leaving} 人停止训练，在队人数从 ${activeTeamSize} 变成 ${after}。留下的人重新分座位，也重新判断自己是不是还愿意继续。`,
+      ],
+      trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
+      choices: [
+        {
+          id: `wave-hold-${targetWeek}`,
+          title: "帮忙整理留下的资料，也送他们回班",
+          preview: "同学好感 +3 · SAN -3 · 心态 -1",
+          result: "你把散落的讲义按名字分好。走廊尽头有人回头挥手，教室里则安静得能听见翻页声。",
+          effects: { peerFavor: 3, san: -3, mindset: -1, tags: ["经历退赛潮"] },
+        },
+        {
+          id: `wave-focus-${targetWeek}`,
+          title: "不讨论去留，把自己的下一阶段计划排满",
+          preview: "做题速率 +1.5 · 教练好感 +1 · SAN -4",
+          result: "你把空出来的桌面铺满卷子。效率确实提高了，但那几把椅子仍不断提醒你：留下也是一种选择。",
+          effects: { problemSpeed: 1.5, coachFavor: 1, san: -4, tags: ["退赛潮后加练"] },
+        },
+        {
+          id: `wave-rethink-${targetWeek}`,
+          title: "和家长认真谈一次自己的退路",
+          preview: "家庭支持 +2 · 常规 +4 · 心态 -1",
+          result: "你们没有立刻得出结论，但第一次把继续竞赛和回班之后分别要做什么都写在了纸上。",
+          effects: { familySupport: 2, academics: 4, mindset: -1, tags: ["退赛潮后讨论退路"] },
+        },
+      ],
+    };
+  }
   const windows = [15, 23, 32, 45, 57, 69];
   const scheduledWeek = windows.find(
     (baseWeek, index) =>
@@ -3467,7 +3905,7 @@ function makeRelationshipTurningEvent(
     title: `一次晚自习后，${rival.name}没有立刻离开。`,
     body: [
       "你们已经交换过笔记、错题和模考后的情绪。讨论竞赛时，你们熟悉彼此最常犯的错误；不讨论竞赛时，却还不确定应该把这段关系叫作什么。",
-      `当前关系积累：亲近 ${relation.bond.toFixed(1)}，竞争张力 ${relation.tension.toFixed(1)}。这次选择只确定第一阶段方向，未来仍可能变化。`,
+      `当前关系积累：亲近 ${formatNumber(relation.bond)}，竞争张力 ${formatNumber(relation.tension)}。这次选择只确定第一阶段方向，未来仍可能变化。`,
     ],
     trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
     choices: [
@@ -3524,7 +3962,7 @@ function makeRivalStudyAction(rival: Rival): WeeklyAction {
     description: `互相挑错并讨论${specialtyLabels[rival.specialty]}。竞争会暴露短板，也会迫使思路更完整。`,
     cost: 1,
     effects: {
-      reasoning: 2,
+      reasoning: 0.45,
       peerFavor: 2,
       san: -1,
     },
@@ -3544,6 +3982,7 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState(origins[1].id);
   const [seed, setSeed] = useState("BIO-527184");
   const [name, setName] = useState("林知夏");
+  const [playerGender, setPlayerGender] = useState<PlayerGender>("female");
   const [screen, setScreen] = useState<
     "origin" | "profile" | "week" | "retired" | "complete" | "postcareer"
   >("origin");
@@ -3553,17 +3992,27 @@ export default function Home() {
   const [schedule, setSchedule] = useState<WeeklyAction[]>([]);
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
   const [weekRecords, setWeekRecords] = useState<WeekRecord[]>([]);
+  const [currentWeekMoments, setCurrentWeekMoments] = useState<WeekMoment[]>([]);
+  const [pendingWeekReview, setPendingWeekReview] = useState<WeekRecord | null>(
+    null,
+  );
   const [selectedBookId, setSelectedBookId] = useState(textbooks[0].id);
   const [selectedModule, setSelectedModule] =
     useState<Textbook["module"]>("module1");
-  const [careerTab, setCareerTab] = useState<"planner" | "rivals" | "store">(
-    "planner",
-  );
+  const [careerTab, setCareerTab] = useState<
+    "planner" | "rivals" | "store" | "journal"
+  >("planner");
   const [pendingEvent, setPendingEvent] = useState<GameEvent | null>(null);
   const [eventChoice, setEventChoice] = useState<string | null>(null);
+  const [eventResultNotice, setEventResultNotice] =
+    useState<EventResultNotice | null>(null);
   const [resolvedEvents, setResolvedEvents] = useState<string[]>([]);
   const [storyTags, setStoryTags] = useState<string[]>([]);
   const [actionCounts, setActionCounts] = useState<Record<string, number>>({});
+  const [currentWeekUses, setCurrentWeekUses] = useState<Record<string, number>>({});
+  const [currentWeekUseWeek, setCurrentWeekUseWeek] = useState(1);
+  const [chocolateStreak, setChocolateStreak] = useState(0);
+  const [lastChocolateWeek, setLastChocolateWeek] = useState(0);
   const [pendingAssessment, setPendingAssessment] =
     useState<AssessmentRecap | null>(null);
   const [assessmentChoice, setAssessmentChoice] = useState<
@@ -3589,12 +4038,20 @@ export default function Home() {
     Record<string, RivalRelationship>
   >({});
   const [inventory, setInventory] = useState<Record<string, number>>({});
+  const [keepsakes, setKeepsakes] = useState<Record<string, KeepsakeRecord>>({});
+  const [keepsakeOpen, setKeepsakeOpen] = useState(false);
+  const [selectedKeepsakeId, setSelectedKeepsakeId] = useState<string | null>(null);
+  const [keepsakeToast, setKeepsakeToast] = useState<{
+    id: string;
+    count: number;
+  } | null>(null);
   const [weeklyBonusPoints, setWeeklyBonusPoints] = useState(0);
   const [weeklyStudyBoost, setWeeklyStudyBoost] = useState(0);
   const [storeNotice, setStoreNotice] = useState<string | null>(null);
   const [allowanceRequestOpen, setAllowanceRequestOpen] = useState(false);
   const [allowanceChoice, setAllowanceChoice] = useState<string | null>(null);
   const [allowanceRequestCount, setAllowanceRequestCount] = useState(0);
+  const [allowanceNotice, setAllowanceNotice] = useState<string | null>(null);
   const [hasSave, setHasSave] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [saveManagerOpen, setSaveManagerOpen] = useState(false);
@@ -3665,7 +4122,9 @@ export default function Home() {
 
   const saveKey = "shengjing-rensheng-save-v1";
   const autoSaveKey = "shengjing-rensheng-autosave-v1";
-  const achievementKey = "shengjing-rensheng-achievements-v1";
+  // v2 discards the old draft-rank based provincial achievements that could be
+  // unlocked before the official team line was published.
+  const achievementKey = "shengjing-rensheng-achievements-v2";
   const manualSaveKeys = Array.from({ length: 10 }, (_, index) =>
     index === 0 ? saveKey : `shengjing-rensheng-save-v1-slot-${index + 1}`,
   );
@@ -3675,6 +4134,7 @@ export default function Home() {
     selectedId,
     seed,
     name,
+    playerGender,
     screen,
     firstChoice,
     openingResolved,
@@ -3682,14 +4142,21 @@ export default function Home() {
     schedule,
     playerStats,
     weekRecords,
+    currentWeekMoments,
+    pendingWeekReview,
     selectedBookId,
     selectedModule,
     careerTab,
     pendingEvent,
     eventChoice,
+    eventResultNotice,
     resolvedEvents,
     storyTags,
     actionCounts,
+    currentWeekUses,
+    currentWeekUseWeek,
+    chocolateStreak,
+    lastChocolateWeek,
     pendingAssessment,
     assessmentChoice,
     queuedEvent,
@@ -3704,12 +4171,14 @@ export default function Home() {
     retiredRivalIds,
     rivalRelationships,
     inventory,
+    keepsakes,
     weeklyBonusPoints,
     weeklyStudyBoost,
     storeNotice,
     allowanceRequestOpen,
     allowanceChoice,
     allowanceRequestCount,
+    allowanceNotice,
     postCareerInput,
     postCareerState,
     unlockedAchievements,
@@ -3780,6 +4249,7 @@ export default function Home() {
       setSelectedId(data.selectedId);
       setSeed(data.seed);
       setName(data.name);
+      setPlayerGender(data.playerGender ?? "female");
       setScreen(data.screen);
       setFirstChoice(data.firstChoice);
       setOpeningResolved(data.openingResolved);
@@ -3787,6 +4257,7 @@ export default function Home() {
       setSchedule(data.schedule ?? []);
       setPlayerStats({
         ...data.playerStats,
+        problemSpeed: data.playerStats.problemSpeed ?? 18,
         slackDependence: data.playerStats.slackDependence ?? 0,
         experimentModules:
           data.playerStats.experimentModules ?? {
@@ -3797,38 +4268,92 @@ export default function Home() {
           },
       });
       setWeekRecords(data.weekRecords ?? []);
+      setCurrentWeekMoments(data.currentWeekMoments ?? []);
+      setPendingWeekReview(data.pendingWeekReview ?? null);
       setSelectedBookId(data.selectedBookId ?? textbooks[0].id);
       setSelectedModule(data.selectedModule ?? "module1");
       // 读档后统一回到周计划，避免玩家被恢复在小卖部或对手页而误以为进度丢失。
       setCareerTab("planner");
       setPendingEvent(data.pendingEvent ?? null);
       setEventChoice(data.eventChoice ?? null);
+      setEventResultNotice(
+        data.eventResultNotice
+          ? {
+              ...data.eventResultNotice,
+              choice: data.eventResultNotice.choice ?? "已记录的选择",
+            }
+          : null,
+      );
       setResolvedEvents(data.resolvedEvents ?? []);
       setStoryTags(data.storyTags ?? []);
       setActionCounts(data.actionCounts ?? {});
+      setCurrentWeekUses(data.currentWeekUses ?? {});
+      setCurrentWeekUseWeek(data.currentWeekUseWeek ?? data.week ?? 1);
+      setChocolateStreak(data.chocolateStreak ?? 0);
+      setLastChocolateWeek(data.lastChocolateWeek ?? 0);
       setPendingAssessment(data.pendingAssessment ?? null);
       setAssessmentChoice(data.assessmentChoice ?? null);
       setQueuedEvent(data.queuedEvent ?? null);
       setProvincialAttempts(data.provincialAttempts ?? []);
       setNationalAttempts(data.nationalAttempts ?? []);
-      setRetirementFlow(data.retirementFlow ?? null);
+      const loadedTags: string[] = data.storyTags ?? [];
+      const secondAttemptFinishedOutsideTeam =
+        loadedTags.includes("第2次省赛-最终名单确认") &&
+        !loadedTags.includes("第2次省赛-进入省队") &&
+        !loadedTags.includes("已退赛");
+      setRetirementFlow(
+        secondAttemptFinishedOutsideTeam
+          ? {
+              stage: "second-failure",
+              step: 0,
+              resumeWeek: data.week ?? 1,
+              initiatedBy: "eligibility",
+            }
+          : (data.retirementFlow ?? null),
+      );
       setRetirementChoice(data.retirementChoice ?? null);
       setRetirementStageCompleted(data.retirementStageCompleted ?? null);
       setRetirementCooldownUntil(data.retirementCooldownUntil ?? 0);
       setRetirementAttemptCount(data.retirementAttemptCount ?? 0);
       setActiveTeamSize(data.activeTeamSize ?? 0);
       setRetiredRivalIds(data.retiredRivalIds ?? []);
-      setRivalRelationships(data.rivalRelationships ?? {});
+      setRivalRelationships(
+        Object.fromEntries(
+          rivals
+            .filter((rival) => rival.scope.startsWith("school"))
+            .map((rival) => [
+              rival.id,
+              normalizeRelationship(
+                data.rivalRelationships?.[rival.id],
+                data.seed,
+                rival.id,
+              ),
+            ]),
+        ),
+      );
       setInventory(data.inventory ?? {});
+      setKeepsakes(data.keepsakes ?? {});
+      setKeepsakeOpen(false);
+      setSelectedKeepsakeId(null);
+      setKeepsakeToast(null);
       setWeeklyBonusPoints(data.weeklyBonusPoints ?? 0);
       setWeeklyStudyBoost(data.weeklyStudyBoost ?? 0);
       setStoreNotice(data.storeNotice ?? null);
       setAllowanceRequestOpen(data.allowanceRequestOpen ?? false);
       setAllowanceChoice(data.allowanceChoice ?? null);
       setAllowanceRequestCount(data.allowanceRequestCount ?? 0);
+      setAllowanceNotice(data.allowanceNotice ?? null);
       setPostCareerInput(data.postCareerInput ?? null);
       setPostCareerState(data.postCareerState ?? null);
-      setUnlockedAchievements(data.unlockedAchievements ?? {});
+      const restoredAchievements = { ...(data.unlockedAchievements ?? {}) };
+      const restoredTags: string[] = data.storyTags ?? [];
+      if (!restoredTags.some((tag) => tag.endsWith("省赛-进入省队"))) {
+        delete restoredAchievements["province-upset"];
+      }
+      if (!restoredTags.some((tag) => tag.endsWith("省赛-省一等奖"))) {
+        delete restoredAchievements["province-one"];
+      }
+      setUnlockedAchievements(restoredAchievements);
       setSaveNotice(`已读取：第 ${data.week} 周`);
       setSaveManagerOpen(false);
     } catch {
@@ -3875,8 +4400,9 @@ export default function Home() {
         playerStats.module3 +
         playerStats.module4) /
       4;
-    const enteredTeamWithLowAverage = provincialAttempts.some(
-      (attempt) => attempt.draftRank <= attempt.teamPlaces && moduleAverage < 65,
+    const enteredTeamWithLowAverage = [1, 2].some(
+      (attempt) =>
+        storyTags.includes(`第${attempt}次省赛-进入省队`) && moduleAverage < 65,
     );
     const conditions: Record<string, boolean> = {
       "first-week": week > 1,
@@ -3890,13 +4416,11 @@ export default function Home() {
         playerStats.san < 50 &&
         Object.values(playerStats.bookStudy).every((book) => book.course >= 70),
       shawshank:
-        Boolean(postCareerInput?.retired) &&
-        (postCareerInput?.familySupport ?? 100) < 45 &&
-        (postCareerInput?.coachFavor ?? 100) < 0,
+        storyTags.includes("逆势退赛完成"),
       "province-upset": enteredTeamWithLowAverage,
-      "province-one": provincialAttempts.some(
-        (attempt) => attempt.draftRank <= attempt.firstPrizeEnd,
-      ),
+      "province-one":
+        storyTags.includes("第1次省赛-省一等奖") ||
+        storyTags.includes("第2次省赛-省一等奖"),
       "national-lab": nationalAttempts.some(
         (attempt) => attempt.qualifiedForExperiment,
       ),
@@ -3924,6 +4448,27 @@ export default function Home() {
       withdrawal:
         postCareerState?.ending?.subtitle.includes("退学结局") ?? false,
     };
+    Object.assign(
+      conditions,
+      communityAchievementConditions({
+        week,
+        stats: playerStats,
+        storyTags,
+        actionCounts,
+        currentWeekUses,
+        chocolateStreak,
+        weekRecords,
+        provincialAttempts,
+        nationalAttempts,
+        activeTeamSize,
+        relationships: rivalRelationships,
+        unlocked: unlockedAchievements,
+        postCareer: postCareerState,
+      }),
+    );
+    conditions.faust = achievementDefinitions
+      .filter((achievement) => achievement.id !== "faust")
+      .every((achievement) => Boolean(unlockedAchievements[achievement.id]));
     const unlocked = achievementDefinitions.find(
       (achievement) =>
         conditions[achievement.id] && !unlockedAchievements[achievement.id],
@@ -3936,6 +4481,10 @@ export default function Home() {
     setAchievementToast(unlocked);
   }, [
     achievementToast,
+    actionCounts,
+    activeTeamSize,
+    currentWeekUses,
+    chocolateStreak,
     nationalAttempts,
     playerStats,
     postCareerInput,
@@ -3944,7 +4493,9 @@ export default function Home() {
     pendingAssessment,
     pendingEvent,
     retirementFlow,
+    rivalRelationships,
     screen,
+    storyTags,
     unlockedAchievements,
     week,
   ]);
@@ -3962,6 +4513,7 @@ export default function Home() {
     retirementFlow,
     schedule,
     postCareerState,
+    keepsakes,
   ]);
 
   const randomize = () => {
@@ -3977,6 +4529,7 @@ export default function Home() {
       module3: 0,
       module4: 0,
       reasoning: 4,
+      problemSpeed: 16,
       experiment: 0,
       experimentUnlocked: false,
       experimentModules: {
@@ -4015,14 +4568,21 @@ export default function Home() {
     setWeek(1);
     setSchedule([]);
     setWeekRecords([]);
+    setCurrentWeekMoments([]);
+    setPendingWeekReview(null);
     setCareerTab("planner");
     setSelectedModule("module1");
     setSelectedBookId(textbooks[0].id);
     setPendingEvent(null);
     setEventChoice(null);
+    setEventResultNotice(null);
     setResolvedEvents([]);
     setStoryTags([`origin:${selected.id}`]);
     setActionCounts({});
+    setCurrentWeekUses({});
+    setCurrentWeekUseWeek(1);
+    setChocolateStreak(0);
+    setLastChocolateWeek(0);
     setPendingAssessment(null);
     setAssessmentChoice(null);
     setQueuedEvent(null);
@@ -4035,17 +4595,17 @@ export default function Home() {
     setRetirementAttemptCount(0);
     setActiveTeamSize(generated.schoolTeamSize);
     setRetiredRivalIds([]);
+    setKeepsakes({});
+    setKeepsakeOpen(false);
+    setSelectedKeepsakeId(null);
+    setKeepsakeToast(null);
     setRivalRelationships(
       Object.fromEntries(
         rivals
           .filter((rival) => rival.scope.startsWith("school"))
           .map((rival) => [
             rival.id,
-            {
-              bond: 4 + (hashSeed(`${seed}-${rival.id}-bond`) % 8),
-              tension: hashSeed(`${seed}-${rival.id}-tension`) % 5,
-              romance: 0,
-            },
+            defaultRelationship(seed, rival.id),
           ]),
       ),
     );
@@ -4056,6 +4616,7 @@ export default function Home() {
     setAllowanceRequestOpen(false);
     setAllowanceChoice(null);
     setAllowanceRequestCount(0);
+    setAllowanceNotice(null);
     setPostCareerInput(null);
     setPostCareerState(null);
     setAchievementOpen(false);
@@ -4067,10 +4628,32 @@ export default function Home() {
     const choice = openingEvent.choices.find((item) => item.id === firstChoice);
     if (!choice || !playerStats) return;
     setPlayerStats(applyEffects(playerStats, choice.effects));
-    if (choice.effects.tags) {
-      setStoryTags((current) => [...new Set([...current, ...choice.effects.tags!])]);
+    const choiceTags = [...(choice.effects.tags ?? [])];
+    if (
+      choiceTags.some((tag) => tag.endsWith("省赛-进入省队")) &&
+      Object.values(rivalRelationships).some(
+        (relation) => relation.route === "friend" && relation.bond >= 42,
+      )
+    ) {
+      choiceTags.push("挚友一同进入省队");
     }
+    if (choiceTags.length) {
+      setStoryTags((current) => [...new Set([...current, ...choiceTags])]);
+    }
+    setCurrentWeekMoments([
+      {
+        kind: "opening",
+        title: openingEvent.title,
+        choice: choice.title,
+        result: choice.result,
+      },
+    ]);
     setOpeningResolved(true);
+    setEventResultNotice({
+      title: openingEvent.title,
+      choice: choice.title,
+      result: choice.result,
+    });
   };
 
   const calendar = calendarFor(generated.firstYear, week);
@@ -4081,8 +4664,102 @@ export default function Home() {
     storyTags,
   );
   const usedTime = schedule.reduce((total, action) => total + action.cost, 0);
-  const totalFreePoints = weekPhase.freePoints + weeklyBonusPoints;
+  const activePartnerEntry = Object.entries(rivalRelationships).find(
+    ([, relation]) => relation.route === "dating",
+  );
+  const bestFriendEntry = Object.entries(rivalRelationships)
+    .filter(([, relation]) => relation.route === "friend")
+    .sort(([, a], [, b]) => b.bond - a.bond)[0];
+  const relationshipName = (rivalId?: string) => {
+    const rival = rivals.find((item) => item.id === rivalId);
+    return rival ? seededRivalIdentity(rival, seed).name : "";
+  };
+  const relationshipTimeCost = activePartnerEntry && week % 2 === 0 ? 1 : 0;
+  const totalFreePoints = Math.max(
+    0,
+    weekPhase.freePoints + weeklyBonusPoints - relationshipTimeCost,
+  );
   const remainingTime = totalFreePoints - usedTime;
+
+  const keepsakeContext = useMemo<KeepsakeContext>(
+    () => ({
+      week,
+      storyTags,
+      resolvedEvents,
+      actionCounts,
+      inventory,
+      experimentUnlocked: playerStats?.experimentUnlocked ?? false,
+      experiment: playerStats?.experiment ?? 0,
+      experimentModules: playerStats
+        ? Object.values(playerStats.experimentModules)
+        : [],
+      retiredRivalCount: retiredRivalIds.length,
+      relationships: Object.values(rivalRelationships).map((relationship) => ({
+        route: relationship.route,
+        bond: relationship.bond,
+        trust: relationship.trust,
+      })),
+      provincialAttempts,
+      nationalAttempts,
+      postCareer: postCareerState
+        ? {
+            stage: postCareerState.stage,
+            admissionRoute: postCareerState.admission?.routeLabel,
+            gaokaoTotal: postCareerState.gaokao?.total,
+            nationalSelected: postCareerState.nationalSelection.selected,
+            internationalMedal:
+              postCareerState.nationalSelection.internationalMedal,
+          }
+        : undefined,
+    }),
+    [
+      actionCounts,
+      inventory,
+      nationalAttempts,
+      playerStats,
+      postCareerState,
+      provincialAttempts,
+      resolvedEvents,
+      retiredRivalIds.length,
+      rivalRelationships,
+      storyTags,
+      week,
+    ],
+  );
+
+  useEffect(() => {
+    if (!playerStats || ["origin", "profile"].includes(screen)) return;
+    const newlyUnlocked = newlyUnlockedKeepsakes(keepsakeContext, keepsakes);
+    if (!newlyUnlocked.length) return;
+    const acquiredAt = new Date().toISOString();
+    setKeepsakes((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        newlyUnlocked.map((keepsake) => [
+          keepsake.id,
+          { acquiredWeek: week, acquiredAt },
+        ]),
+      ),
+    }));
+    const reward = newlyUnlocked.reduce<GameEffect>((total, keepsake) => {
+      Object.entries(keepsake.reward ?? {}).forEach(([key, value]) => {
+        if (typeof value !== "number") return;
+        const effectKey = key as keyof GameEffect;
+        total[effectKey] = ((total[effectKey] as number | undefined) ?? 0) + value;
+      });
+      return total;
+    }, {});
+    if (Object.keys(reward).length) {
+      setPlayerStats((current) => (current ? applyEffects(current, reward) : current));
+    }
+    setKeepsakeToast({ id: newlyUnlocked[0].id, count: newlyUnlocked.length });
+  }, [keepsakeContext, keepsakes, playerStats, screen, week]);
+
+  useEffect(() => {
+    if (!keepsakeToast) return;
+    const timer = window.setTimeout(() => setKeepsakeToast(null), 3600);
+    return () => window.clearTimeout(timer);
+  }, [keepsakeToast]);
 
   const addAction = (action: WeeklyAction) => {
     if (!playerStats) return;
@@ -4091,14 +4768,14 @@ export default function Home() {
       const scheduledSlack = schedule.filter(
         (item) => item.id === "slack-off",
       ).length;
-      const dependenceLevel = playerStats.slackDependence + scheduledSlack;
+      const projection = slackProjection(playerStats, scheduledSlack);
       plannedAction = {
         ...action,
-        cost: Math.min(3, 1 + Math.floor(dependenceLevel / 3)),
+        cost: projection.cost,
         effects: {
           ...action.effects,
-          san: round1(Math.max(2.5, 7 - dependenceLevel * 0.55)),
-          mindset: round1(-1 - dependenceLevel * 0.12),
+          san: projection.san,
+          mindset: projection.mindset,
         },
       };
     }
@@ -4147,7 +4824,6 @@ export default function Home() {
     setPlayerStats(
       applyEffects(playerStats, {
         pocketMoney: -price,
-        mindset: item.category === "玩具" ? 0.5 : 0,
       }),
     );
     setInventory((current) => ({
@@ -4162,15 +4838,30 @@ export default function Home() {
       [`shop:${item.id}`]: (current[`shop:${item.id}`] ?? 0) + 1,
     }));
     setStoreNotice(
-      `买下了「${item.name}」。${item.flavor} 后续影响要等实际使用或事件发生后才会知道。`,
+      `买下了「${item.name}」。${item.flavor}`,
     );
   };
 
   const useShopItem = (item: ShopItem) => {
     if (!playerStats || !item.consumable || (inventory[item.id] ?? 0) <= 0)
       return;
-    if (item.id === "coffee" && weeklyBonusPoints >= 2) {
-      setStoreNotice("本周已经喝了两杯。再喝只会让手抖，不会继续增加行动点。");
+    const usedThisWeek =
+      currentWeekUseWeek === week ? (currentWeekUses[item.id] ?? 0) : 0;
+    const weeklySingleUse = [
+      "coffee",
+      "chocolate",
+      "energy-drink",
+      "hardback-notebook",
+      "mint",
+      "earplugs",
+      "shared-snack",
+    ].includes(item.id);
+    if (weeklySingleUse && usedThisWeek >= 1) {
+      setStoreNotice(`「${item.name}」本周已经生效。继续使用不会得到额外收益。`);
+      return;
+    }
+    if ((item.bonusActionPoints ?? 0) > 0 && weeklyBonusPoints >= 2) {
+      setStoreNotice("本周从补给中获得的额外行动点已经达到上限。再喝只会增加负担。");
       return;
     }
     setInventory((current) => ({
@@ -4192,8 +4883,22 @@ export default function Home() {
       ...current,
       [`use:${item.id}`]: (current[`use:${item.id}`] ?? 0) + 1,
     }));
+    setCurrentWeekUses((current) => ({
+      ...(currentWeekUseWeek === week ? current : {}),
+      [item.id]:
+        (currentWeekUseWeek === week ? (current[item.id] ?? 0) : 0) + 1,
+    }));
+    setCurrentWeekUseWeek(week);
+    if (item.id === "chocolate" && lastChocolateWeek !== week) {
+      setChocolateStreak((current) =>
+        lastChocolateWeek === week - 1 ? current + 1 : 1,
+      );
+      setLastChocolateWeek(week);
+    }
     setStoreNotice(
-      `使用了「${item.name}」。你感觉到了一点变化，具体数值已经计入状态。`,
+      item.effectVisible
+        ? `使用了「${item.name}」。${item.description}`
+        : `使用了「${item.name}」。${item.flavor}`,
     );
   };
 
@@ -4233,6 +4938,28 @@ export default function Home() {
         nationalRank !== null
           ? nationalMedalForRank(nationalRank)
           : latestNational?.medal,
+      playerGender,
+      modules: [stats.module1, stats.module2, stats.module3, stats.module4],
+      fantasyJoined: storyTags.includes("幻想乡:加入"),
+      fantasyChats: actionCounts["fantasy-chat"] ?? 0,
+      relationships: Object.entries(rivalRelationships)
+        .filter(([, relation]) =>
+          ["dating", "friend", "broken-up", "strained", "crush"].includes(
+            relation.route,
+          ),
+        )
+        .map(([rivalId, relation]) => ({
+          name: relationshipName(rivalId),
+          route: relation.route as
+            | "dating"
+            | "friend"
+            | "broken-up"
+            | "strained"
+            | "crush",
+          bond: relation.bond,
+          trust: relation.trust,
+          conflict: relation.conflict,
+        })),
     };
     setPostCareerInput(input);
     setPostCareerState(createPostCareer(input));
@@ -4267,6 +4994,32 @@ export default function Home() {
     },
   ];
 
+  const allowanceProjection = (
+    option: (typeof allowanceOptions)[number],
+    stats: PlayerStats,
+  ) => {
+    const repetitionMultiplier = 1 + allowanceRequestCount * 0.35;
+    const originCostFactor =
+      selected.id === "wealthy-family" ? 0.7 : selected.id === "coach-family" ? 1.2 : 1;
+    const originChance =
+      selected.id === "wealthy-family"
+        ? 0.14
+        : selected.id === "coach-family"
+          ? 0.05
+          : selected.id === "county-school"
+            ? -0.05
+            : 0;
+    return {
+      supportCost: round1(option.baseSupportCost * repetitionMultiplier * originCostFactor),
+      successChance: clamp(
+        0.38 + stats.familySupport / 130 - option.amount / 520 -
+          allowanceRequestCount * 0.06 + originChance,
+        0.15,
+        0.94,
+      ),
+    };
+  };
+
   const resolveAllowanceRequest = () => {
     if (!allowanceRequestOpen || !allowanceChoice || !playerStats) return;
     if (allowanceChoice === "cancel") {
@@ -4276,33 +5029,7 @@ export default function Home() {
     }
     const option = allowanceOptions.find((item) => item.id === allowanceChoice);
     if (!option) return;
-    const repetitionMultiplier = 1 + allowanceRequestCount * 0.35;
-    const originCostFactor =
-      selected.id === "wealthy-family"
-        ? 0.7
-        : selected.id === "coach-family"
-          ? 1.2
-          : 1;
-    const supportCost = round1(
-      option.baseSupportCost * repetitionMultiplier * originCostFactor,
-    );
-    const originChance =
-      selected.id === "wealthy-family"
-        ? 0.14
-        : selected.id === "coach-family"
-          ? 0.05
-          : selected.id === "county-school"
-            ? -0.05
-            : 0;
-    const successChance = clamp(
-      0.38 +
-        playerStats.familySupport / 130 -
-        option.amount / 520 -
-        allowanceRequestCount * 0.06 +
-        originChance,
-      0.15,
-      0.94,
-    );
+    const { supportCost, successChance } = allowanceProjection(option, playerStats);
     const succeeded =
       seededUnit(
         `${seed}-allowance-${week}-${allowanceRequestCount}-${option.id}`,
@@ -4322,11 +5049,18 @@ export default function Home() {
       ]),
     ]);
     setAllowanceRequestCount((current) => current + 1);
-    setStoreNotice(
-      succeeded
-        ? `父母转来了 ¥${option.amount}，但对你近期的花销多问了几句。`
-        : "父母没有转钱，并提醒你最近要得有些频繁。",
-    );
+    const feedbackIndex = hashSeed(`${seed}-allowance-copy-${week}-${allowanceRequestCount}`) % 3;
+    const successCopies = [
+      `手机震了一下：父母转来了 ¥${option.amount}，随后问你咖啡是不是已经成了固定开销。`,
+      `父母答应了这次申请，¥${option.amount} 到账；他们让你下次把最近的消费一起说清楚。`,
+      `钱转了过来。父母没有追问每一项用途，只提醒你别把疲惫全靠零食和咖啡顶过去。`,
+    ];
+    const failureCopies = [
+      "父母没有转钱。他们认为现有零花钱应该够用，并让你先说清楚上一次花在了哪里。",
+      "消息停在“再说吧”。晚饭时父母提起最近的考试，显然这次申请没有通过。",
+      "申请被拒绝了。父母没有否定竞赛支出，但把个人消费和培训费用分得很清楚。",
+    ];
+    setAllowanceNotice((succeeded ? successCopies : failureCopies)[feedbackIndex]);
     setAllowanceRequestOpen(false);
     setAllowanceChoice(null);
   };
@@ -4338,7 +5072,7 @@ export default function Home() {
       playerStats,
       seed,
       week,
-      weeklyStudyBoost,
+      weeklyStudyBoost + relationshipLearningBoost(rivalRelationships),
       selected.id,
     );
     const fixedEffects = weekPhase.fixed.reduce<GameEffect>((total, item) => {
@@ -4362,12 +5096,22 @@ export default function Home() {
     }, {});
     const scheduledEffects = adjusted.effects;
     const effects = { ...fixedEffects };
+    if (activePartnerEntry) {
+      effects.san = round1((effects.san ?? 0) - 0.4);
+    }
     effectLabels.forEach(([key]) => {
       const amount = scheduledEffects[key];
       if (typeof amount === "number") {
         effects[key] = ((effects[key] as number | undefined) ?? 0) + amount;
       }
     });
+    const monthlyPocketMoney =
+      week % 4 === 0 ? selected.stats.monthlyPocketMoney : 0;
+    if (monthlyPocketMoney > 0) {
+      effects.pocketMoney = round1(
+        (effects.pocketMoney ?? 0) + monthlyPocketMoney,
+      );
+    }
     if (!weekPhase.isLeave) {
       const competitionLoad = schedule
         .filter((action) => action.category === "study")
@@ -4520,7 +5264,50 @@ export default function Home() {
       }
     });
     if (weekPhase.isTraining) incrementCount("training-week");
+    if (assessmentItem?.assessment?.type === "competition")
+      incrementCount("competition-assessment");
     setActionCounts(nextCounts);
+    const weeklyTags: string[] = [];
+    const allSlack =
+      schedule.length > 0 && schedule.every((action) => action.id === "slack-off");
+    const extremePractice = schedule.reduce(
+      (total, action) =>
+        total +
+        (action.bookEffect?.mode === "practice" ||
+        action.id.includes("wrong-question")
+          ? action.cost
+          : 0),
+      0,
+    );
+    if (allSlack) weeklyTags.push("一周全部摸鱼");
+    if (extremePractice >= 4) weeklyTags.push("一周极端刷题");
+    if (
+      assessmentItem?.assessment?.title.includes("联赛") &&
+      [nextStats.module1, nextStats.module2, nextStats.module3, nextStats.module4].every(
+        (value) => value <= 30,
+      )
+    )
+      weeklyTags.push("低掌握参加省赛");
+    if (
+      (nextCounts["competition-assessment"] ?? 0) >= 12 &&
+      Object.values(nextStats.bookStudy).filter((book) => book.retention < 48)
+        .length >= 4
+    )
+      weeklyTags.push("长期模考却遗忘");
+    if (weeklyTags.length) {
+      setStoryTags((current) => [...new Set([...current, ...weeklyTags])]);
+    }
+    const nextRelationships = Object.fromEntries(
+      Object.entries(rivalRelationships).map(([rivalId, relation]) => [
+        rivalId,
+        settleRelationshipWeek(
+          normalizeRelationship(relation, seed, rivalId),
+          schedule.some((action) => action.id === `rival-study-${rivalId}`),
+          week + 1,
+        ),
+      ]),
+    );
+    setRivalRelationships(nextRelationships);
     const changes = effectLabels
       .filter(([key]) => !key.startsWith("module"))
       .map(([key, label]) => ({
@@ -4531,17 +5318,34 @@ export default function Home() {
             : 0,
       }))
       .filter((change) => change.value !== 0);
+    const completedWeekRecord: WeekRecord = {
+      week,
+      headline: weekHeadline(week, effects),
+      changes,
+      efficiency: adjusted.baseEfficiency,
+      fluctuation: adjusted.fluctuation,
+      sanAfter: nextStats.san,
+      fixedActions: [
+        ...weekPhase.fixed.map((item) => ({
+          title: item.title,
+          cost: item.cost,
+        })),
+        ...(monthlyPocketMoney > 0
+          ? [
+              {
+                title: `本月零花钱到账 ¥${monthlyPocketMoney}`,
+                cost: 0,
+              },
+            ]
+          : []),
+      ],
+      chosenActions: summarizeChosenActions(schedule),
+      moments: currentWeekMoments,
+    };
     setPlayerStats(nextStats);
-    setWeekRecords((current) => [
-      ...current,
-      {
-        week,
-        headline: weekHeadline(week, effects),
-        changes,
-        efficiency: adjusted.baseEfficiency,
-        fluctuation: adjusted.fluctuation,
-      },
-    ]);
+    setWeekRecords((current) => [...current, completedWeekRecord]);
+    setPendingWeekReview(completedWeekRecord);
+    setCurrentWeekMoments([]);
     let provincialAttempt: ProvincialAttempt | undefined;
     let nextAttempts = provincialAttempts;
     if (assessmentItem?.assessment?.title.includes("联赛")) {
@@ -4627,15 +5431,157 @@ export default function Home() {
       activeTeamSize,
       generated.schoolTeamSize,
       retiredRivalIds,
+      nextCalendar,
     );
-    const relationshipTurning = makeRelationshipTurningEvent(
-      week + 1,
-      rivalRelationships,
+    const nextStoryTags = [...new Set([...storyTags, ...weeklyTags])];
+    const nextWeeksToProvincial = [
+      nextCalendar.firstExamWeek,
+      nextCalendar.secondExamWeek,
+    ]
+      .filter((examWeek) => examWeek >= week + 1)
+      .map((examWeek) => examWeek - (week + 1))
+      .sort((a, b) => a - b)[0];
+    const relationshipStory = nextRelationshipStoryEvent({
+      week: week + 1,
+      seed,
+      playerGender,
+      candidates: rivals
+        .filter((rival) => rival.scope === "school-peer")
+        .map((rival) => {
+          const identity = seededRivalIdentity(rival, seed);
+          return {
+            rival: {
+              ...rival,
+              name: identity.name,
+              personality: identity.personality,
+              studyStyle: identity.studyStyle,
+            },
+            gender: identity.gender,
+            personalityKey: identity.personalityKey,
+            innerConflictKey: identity.innerConflictKey,
+          };
+        }),
+      relationships: nextRelationships,
       resolvedEvents,
       retiredRivalIds,
-    );
+      storyTags: nextStoryTags,
+      san: nextStats.san,
+      coachFavor: nextStats.coachFavor,
+      familySupport: nextStats.familySupport,
+    });
+    const relationshipDaily = relationshipStory
+      ? null
+      : nextRelationshipDailyEvent({
+          week: week + 1,
+          seed,
+          playerGender,
+          candidates: rivals
+            .filter((rival) => rival.scope === "school-peer")
+            .map((rival) => {
+              const identity = seededRivalIdentity(rival, seed);
+              return {
+                rival: {
+                  ...rival,
+                  name: identity.name,
+                  personality: identity.personality,
+                  studyStyle: identity.studyStyle,
+                },
+                gender: identity.gender,
+                personalityKey: identity.personalityKey,
+                innerConflictKey: identity.innerConflictKey,
+              };
+            }),
+          relationships: nextRelationships,
+          resolvedEvents,
+          retiredRivalIds,
+          storyTags: nextStoryTags,
+          san: nextStats.san,
+          coachFavor: nextStats.coachFavor,
+          familySupport: nextStats.familySupport,
+          isTraining: nextWeekPhaseForEvents.isTraining,
+          pocketMoney: nextStats.pocketMoney,
+          weeksToProvincial: nextWeeksToProvincial,
+          hasNationalAttempt: nextNationalAttempts.length > 0,
+        });
+    const personalityDaily = relationshipStory
+      ? null
+      : nextPersonalityDailyEvent({
+          week: week + 1,
+          seed,
+          playerGender,
+          candidates: rivals
+            .filter((rival) => rival.scope === "school-peer")
+            .map((rival) => {
+              const identity = seededRivalIdentity(rival, seed);
+              return {
+                rival: {
+                  ...rival,
+                  name: identity.name,
+                  personality: identity.personality,
+                  studyStyle: identity.studyStyle,
+                },
+                gender: identity.gender,
+                personalityKey: identity.personalityKey,
+                innerConflictKey: identity.innerConflictKey,
+              };
+            }),
+          relationships: nextRelationships,
+          resolvedEvents,
+          retiredRivalIds,
+          storyTags: nextStoryTags,
+          san: nextStats.san,
+          coachFavor: nextStats.coachFavor,
+          familySupport: nextStats.familySupport,
+          isTraining: nextWeekPhaseForEvents.isTraining,
+          pocketMoney: nextStats.pocketMoney,
+          weeksToProvincial: nextWeeksToProvincial,
+          hasNationalAttempt: nextNationalAttempts.length > 0,
+        });
+    const fantasyStory = nextFantasyStoryEvent({
+      week: week + 1,
+      seed,
+      social: nextStats.social,
+      peerFavor: nextStats.peerFavor,
+      san: nextStats.san,
+      slackActions: nextCounts["slack-off"] ?? 0,
+      slackedThisWeek: slackCount > 0,
+      slackDependence: nextStats.slackDependence,
+      resolvedEvents,
+      storyTags: nextStoryTags,
+      activeTeamSize,
+      hasNationalAttempt: nextNationalAttempts.length > 0,
+    });
+    const achievementStory = nextAchievementStoryEvent({
+      week: week + 1,
+      seed,
+      san: nextStats.san,
+      mindset: nextStats.mindset,
+      experiment: nextStats.experiment,
+      modules: [
+        nextStats.module1,
+        nextStats.module2,
+        nextStats.module3,
+        nextStats.module4,
+      ],
+      resolvedEvents,
+      storyTags: nextStoryTags,
+      inventory,
+      actionCounts: nextCounts,
+      weeksToProvincial: nextWeeksToProvincial,
+    });
+    const relationshipEvent =
+      relationshipStory ??
+      ((week + 1) % 2 === 0
+        ? personalityDaily ?? relationshipDaily
+        : relationshipDaily ?? personalityDaily);
+    const storylineEvent =
+      (week + 1) % 3 === 0
+        ? fantasyStory ?? relationshipEvent ?? achievementStory
+        : (week + 1) % 3 === 1
+          ? relationshipEvent ?? achievementStory ?? fantasyStory
+          : achievementStory ?? fantasyStory ?? relationshipEvent;
     const nextEvent =
-      milestone ?? teammateDeparture ?? relationshipTurning ?? randomEvent;
+      milestone ?? teammateDeparture ?? storylineEvent ?? randomEvent;
     if (
       !retirementFlow &&
       week + 1 >= retirementCooldownUntil &&
@@ -4687,6 +5633,15 @@ export default function Home() {
         seededUnit(`${seed}-family-forced-retire-${week}`) <
           familyPressureChance;
       if (coachPressure || familyPressure) {
+        setStoryTags((current) => [
+          ...new Set([
+            ...current,
+            "曾被家长或教练劝退",
+            ...(coachPressure && nextStats.san < 40
+              ? ["低SAN时被教练劝退"]
+              : []),
+          ]),
+        ]);
         setRetirementFlow({
           stage: retirementStageFor(week, storyTags, nextNationalAttempts),
           step: 0,
@@ -4708,6 +5663,7 @@ export default function Home() {
           nationalStage,
           generated.schoolAcademicStrength,
           generated.schoolParticipants,
+          activeTeamSize,
         ),
       );
       setAssessmentChoice(null);
@@ -4731,7 +5687,7 @@ export default function Home() {
     if (assessmentChoice === "review") {
       effects =
         pendingAssessment.type === "competition"
-          ? { reasoning: 2.5, coachFavor: 1, san: -2 }
+          ? { reasoning: 0.7, problemSpeed: 1.4, coachFavor: 1, san: -2 }
           : { academics: 6, mindset: 0.5, san: -2.5 };
     } else if (assessmentChoice === "rank") {
       effects = { san: 1, mindset: -0.5 };
@@ -4821,6 +5777,30 @@ export default function Home() {
       effects.familySupport = round1((effects.familySupport ?? 0) + 2);
     }
     setPlayerStats(applyEffects(playerStats, effects));
+    const assessmentChoiceLabel =
+      assessmentChoice === "review"
+        ? "完成复盘"
+        : assessmentChoice === "rank"
+          ? "只看排名"
+          : "先休息";
+    setWeekRecords((current) =>
+      current.map((record, index) =>
+        index === current.length - 1
+          ? {
+              ...record,
+              moments: [
+                ...(record.moments ?? []),
+                {
+                  kind: "assessment",
+                  title: pendingAssessment.title,
+                  choice: assessmentChoiceLabel,
+                  result: effectPreview(effects) || "没有产生即时数值变化",
+                },
+              ],
+            }
+          : record,
+      ),
+    );
     setPendingAssessment(null);
     setAssessmentChoice(null);
     setPendingEvent(queuedEvent);
@@ -4838,6 +5818,26 @@ export default function Home() {
       playerStats,
     );
     const nextStats = applyEffects(playerStats, resolvedEffects);
+    nextStats.bookStudy = Object.fromEntries(
+      Object.entries(nextStats.bookStudy).map(([bookId, state]) => [
+        bookId,
+        { ...state },
+      ]),
+    );
+    (["module1", "module2", "module3", "module4"] as const).forEach(
+      (module) => {
+        const gain = resolvedEffects[module];
+        if (typeof gain !== "number" || gain <= 0) return;
+        textbooks
+          .filter((book) => book.module === module)
+          .forEach((book) => {
+            const state = nextStats.bookStudy[book.id];
+            state.course = round1(Math.min(94, state.course + gain));
+            state.retention = round1(clamp(state.retention + gain * 0.8));
+            state.lastStudiedWeek = week;
+          });
+      },
+    );
     nextStats.module1 = weightedModuleProgress(nextStats.bookStudy, "module1");
     nextStats.module2 = weightedModuleProgress(nextStats.bookStudy, "module2");
     nextStats.module3 = weightedModuleProgress(nextStats.bookStudy, "module3");
@@ -4846,48 +5846,85 @@ export default function Home() {
     if (choice.effects.tags) {
       setStoryTags((current) => [...new Set([...current, ...choice.effects.tags!])]);
     }
-    const involvedRival = rivalMentionedBy(pendingEvent);
+    if (
+      pendingEvent.id.startsWith("provincial-") &&
+      pendingEvent.id.endsWith("-official-result")
+    ) {
+      const attemptNumber = Number(pendingEvent.id.split("-")[1]) as 1 | 2;
+      setProvincialAttempts((current) =>
+        current.map((attempt) => {
+          if (attempt.attemptNumber !== attemptNumber) return attempt;
+          const appealed = storyTags.includes(`第${attemptNumber}次省赛-提交申诉`);
+          const finalScore = round1(
+            clamp(attempt.draftScore + (appealed ? attempt.appealDelta : 0)),
+          );
+          const finalRank = rankAgainst(attempt.competitorScores, finalScore);
+          return {
+            ...attempt,
+            finalScore,
+            finalRank,
+            enteredTeam: finalRank <= attempt.teamPlaces,
+            finalAward: provincialAward(finalRank, attempt),
+          };
+        }),
+      );
+    }
+    const forcedSecondFailure =
+      pendingEvent.id === "provincial-2-official-result" &&
+      !choice.effects.tags?.includes("第2次省赛-进入省队");
+    const involvedRival =
+      rivals.find(
+        (rival) =>
+          pendingEvent.id.includes(rival.id) || choice.id.includes(rival.id),
+      ) ?? rivalMentionedBy(pendingEvent);
     if (involvedRival) {
       setRivalRelationships((current) => {
-        const previous = current[involvedRival.id] ?? {
-          bond: 0,
-          tension: 0,
-          romance: 0,
-        };
+        const previous = normalizeRelationship(
+          current[involvedRival.id],
+          seed,
+          involvedRival.id,
+        );
         const peerChange = resolvedEffects.peerFavor ?? 0;
-        const avoided =
-          choice.id.includes("avoid") ||
-          choice.id.includes("decline") ||
-          choice.id.includes("dismiss");
-        const choseFriend = choice.id.startsWith("relationship-friend-");
-        const choseRivalry = choice.id.startsWith("relationship-rivalry-");
-        const choseCrush = choice.id.startsWith("relationship-crush-");
+        const storyUpdated = applyRelationshipChoice(previous, choice.id, week);
+        const isDedicatedStory = pendingEvent.id.startsWith("bondstory-");
         return {
           ...current,
           [involvedRival.id]: {
-            ...previous,
+            ...storyUpdated,
             bond: round1(
               clamp(
-                previous.bond +
-                  Math.max(0, peerChange) * 2.2 +
-                  (choseFriend ? 15 : 0) +
-                  (choseCrush ? 8 : 0),
+                storyUpdated.bond +
+                  (isDedicatedStory ? 0 : Math.max(0, peerChange) * 1.6),
               ),
             ),
             tension: round1(
               clamp(
-                previous.tension +
-                  Math.max(0, -peerChange) * 2.5 +
-                  (avoided ? 2 : 0) +
-                  (choseRivalry ? 18 : 0),
+                storyUpdated.tension +
+                  (isDedicatedStory ? 0 : Math.max(0, -peerChange) * 2),
               ),
             ),
-            romance: round1(
-              clamp(previous.romance + (choseCrush ? 18 : 0)),
-            ),
+            romance: round1(clamp(storyUpdated.romance)),
           },
         };
       });
+    }
+    if (pendingEvent.id.startsWith("fantasy-")) {
+      setActionCounts((current) => ({
+        ...current,
+        "fantasy-chat": (current["fantasy-chat"] ?? 0) + 1,
+      }));
+    }
+    if (pendingEvent.id.startsWith("bondstory-")) {
+      setActionCounts((current) => ({
+        ...current,
+        "relationship-story": (current["relationship-story"] ?? 0) + 1,
+        ...(pendingEvent.id.includes("-daily-")
+          ? {
+              "relationship-daily":
+                (current["relationship-daily"] ?? 0) + 1,
+            }
+          : {}),
+      }));
     }
     if (pendingEvent.id.startsWith("teammate-departure-")) {
       const rivalId = pendingEvent.id
@@ -4896,20 +5933,49 @@ export default function Home() {
       setActiveTeamSize((current) => Math.max(0, current - 1));
       setRetiredRivalIds((current) => [...new Set([...current, rivalId])]);
     }
-    setResolvedEvents((current) => [...current, pendingEvent.id]);
-    if (pendingEvent.id === "national-2-award") {
-      const secondNational = nationalAttempts.find(
-        (attempt) => attempt.attemptNumber === 2,
-      );
-      enterPostCareer(
-        nextStats,
-        false,
-        undefined,
-        secondNational?.finalRank ?? null,
-      );
-      setEventChoice(null);
-      return;
+    if (pendingEvent.id.startsWith("teammate-wave-")) {
+      const leaving = Number(pendingEvent.id.split("-")[2]) || 2;
+      setActiveTeamSize((current) => Math.max(1, current - leaving));
+      setRetiredRivalIds((current) => {
+        const available = rivals
+          .filter((rival) => rival.scope.startsWith("school") && !current.includes(rival.id))
+          .sort(
+            (a, b) =>
+              hashSeed(`${seed}-${pendingEvent.id}-${a.id}`) -
+              hashSeed(`${seed}-${pendingEvent.id}-${b.id}`),
+          )
+          .slice(0, leaving)
+          .map((rival) => rival.id);
+        return [...new Set([...current, ...available])];
+      });
     }
+    setResolvedEvents((current) => [...current, pendingEvent.id]);
+    setCurrentWeekMoments((current) => [
+      ...current,
+      {
+        kind: "event",
+        title: seedRivalText(pendingEvent.title, seed),
+        choice: seedRivalText(choice.title, seed),
+        result: seedRivalText(choice.result, seed),
+      },
+    ]);
+    if (forcedSecondFailure) {
+      setRetirementFlow({
+        stage: "second-failure",
+        step: 0,
+        resumeWeek: week,
+        initiatedBy: "eligibility",
+      });
+      setRetirementChoice(null);
+    }
+    setEventResultNotice({
+      title: pendingEvent.title,
+      choice: choice.title,
+      result: choice.result,
+      ...(pendingEvent.id === "national-2-award"
+        ? { nextAction: { type: "national-finish" } as const }
+        : {}),
+    });
     setPendingEvent(null);
     setEventChoice(null);
   };
@@ -4927,34 +5993,99 @@ export default function Home() {
       ]);
     }
     if (choice.action === "advance") {
+      setEventResultNotice({
+        title: scene.title,
+        choice: choice.title,
+        result: choice.result,
+      });
+      if (retirementFlow.step === 1) {
+        const oppositionTags = [
+          ...(playerStats.familySupport >= 62 ? ["家长反对退赛"] : []),
+          ...(playerStats.coachFavor >= 15 || playerStats.coachFavor <= 5
+            ? ["教练反对退赛"]
+            : []),
+        ];
+        if (oppositionTags.length) {
+          setStoryTags((current) => [...new Set([...current, ...oppositionTags])]);
+        }
+      }
       setRetirementFlow({
         ...retirementFlow,
         step: Math.min(2, retirementFlow.step + 1) as 0 | 1 | 2,
-        resumeWeek: week + 1,
+        resumeWeek:
+          retirementFlow.stage === "second-failure" ? week : week + 1,
       });
       setRetirementChoice(null);
       setRetirementAttemptCount((current) => current + 1);
       return;
     }
     if (choice.action === "retire") {
+      const nextProvinceWeek = [calendar.firstExamWeek, calendar.secondExamWeek]
+        .filter((examWeek) => examWeek >= week)
+        .sort((a, b) => a - b)[0];
+      if (
+        nextProvinceWeek !== undefined &&
+        nextProvinceWeek - week <= 1 &&
+        retirementFlow.stage !== "second-failure"
+      ) {
+        setStoryTags((current) => [
+          ...new Set([...current, "省赛前一周正式退赛"]),
+        ]);
+      }
+      if (
+        storyTags.includes("家长反对退赛") &&
+        storyTags.includes("教练反对退赛")
+      ) {
+        setStoryTags((current) => [...new Set([...current, "逆势退赛完成"])]);
+      }
       setRetirementStageCompleted(retirementFlow.stage);
       setRetirementFlow(null);
       setRetirementChoice(null);
       setSchedule([]);
-      enterPostCareer(
-        nextStats,
-        true,
-        retirementStageCopy[retirementFlow.stage].label.replace(
-          "退赛事件 · ",
-          "",
-        ),
-      );
+      setEventResultNotice({
+        title: scene.title,
+        choice: choice.title,
+        result: choice.result,
+        nextAction: {
+          type: "retirement-finish",
+          stage: retirementFlow.stage,
+        },
+      });
       return;
     }
+    setEventResultNotice({
+      title: scene.title,
+      choice: choice.title,
+      result: choice.result,
+    });
     setRetirementCooldownUntil(week + 4);
     setRetirementAttemptCount((current) => current + 1);
     setRetirementFlow(null);
     setRetirementChoice(null);
+  };
+
+  const continueAfterEventResult = () => {
+    if (!eventResultNotice) return;
+    const nextAction = eventResultNotice.nextAction;
+    setEventResultNotice(null);
+    if (!nextAction || !playerStats) return;
+    if (nextAction.type === "national-finish") {
+      const secondNational = nationalAttempts.find(
+        (attempt) => attempt.attemptNumber === 2,
+      );
+      enterPostCareer(
+        playerStats,
+        false,
+        undefined,
+        secondNational?.finalRank ?? null,
+      );
+      return;
+    }
+    enterPostCareer(
+      playerStats,
+      true,
+      retirementStageCopy[nextAction.stage].label.replace("退赛事件 · ", ""),
+    );
   };
 
   const saveDialog = saveManagerOpen ? (
@@ -5028,6 +6159,142 @@ export default function Home() {
     </div>
   ) : null;
 
+  const acquiredKeepsakes = keepsakeDefinitions
+    .filter((keepsake) => Boolean(keepsakes[keepsake.id]))
+    .map((keepsake) => ({
+      definition: displayKeepsake(keepsake, keepsakeContext),
+      record: keepsakes[keepsake.id],
+    }))
+    .sort(
+      (a, b) =>
+        a.record.acquiredWeek - b.record.acquiredWeek ||
+        a.definition.atlasIndex - b.definition.atlasIndex,
+    );
+  const drawerSlotCount = Math.max(
+    24,
+    Math.ceil((acquiredKeepsakes.length + 5) / 8) * 8,
+  );
+  const selectedKeepsake = selectedKeepsakeId
+    ? keepsakeById[selectedKeepsakeId]
+    : undefined;
+  const selectedKeepsakeDisplay = selectedKeepsake
+    ? displayKeepsake(selectedKeepsake, keepsakeContext)
+    : undefined;
+  const keepsakeUi = playerStats ? (
+    <>
+      <button
+        className="keepsake-fab"
+        onClick={() => setKeepsakeOpen(true)}
+        aria-label="打开纪念物抽屉"
+      >
+        <span className="drawer-mark">▤</span>
+        抽屉 {acquiredKeepsakes.length}
+      </button>
+      {keepsakeToast && keepsakeById[keepsakeToast.id] && (
+        <aside className="keepsake-toast" role="status">
+          <span
+            className={`item-sprite rarity-${displayKeepsake(keepsakeById[keepsakeToast.id], keepsakeContext).rarity}`}
+            style={itemSpriteStyle(keepsakeById[keepsakeToast.id].atlasIndex)}
+            aria-hidden="true"
+          />
+          <div>
+            <small>NEW KEEPSAKE</small>
+            <strong>
+              {displayKeepsake(keepsakeById[keepsakeToast.id], keepsakeContext).name}
+            </strong>
+            <p>
+              {rarityLabels[
+                displayKeepsake(keepsakeById[keepsakeToast.id], keepsakeContext)
+                  .rarity
+              ]}
+              {keepsakeToast.count > 1
+                ? ` · 同时收进抽屉 ${keepsakeToast.count} 件物品`
+                : " · 已收进抽屉"}
+            </p>
+          </div>
+        </aside>
+      )}
+      {keepsakeOpen && (
+        <div className="keepsake-backdrop" role="presentation">
+          <section
+            className="keepsake-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="纪念物抽屉"
+          >
+            <header>
+              <div>
+                <p className="kicker">THE DESK DRAWER</p>
+                <h2>书桌抽屉</h2>
+                <p>这里只摆放本周目真正留下的东西。空位不会透露还有什么尚未发生。</p>
+              </div>
+              <button
+                onClick={() => setKeepsakeOpen(false)}
+                aria-label="关闭纪念物抽屉"
+              >
+                ×
+              </button>
+            </header>
+            <div className="keepsake-modal-body">
+              <div className="keepsake-drawer-grid">
+                {Array.from({ length: drawerSlotCount }, (_, index) => {
+                  const entry = acquiredKeepsakes[index];
+                  if (!entry) {
+                    return <span className="keepsake-empty-slot" key={`empty-${index}`} />;
+                  }
+                  const { definition, record } = entry;
+                  return (
+                    <button
+                      className={`keepsake-slot rarity-${definition.rarity} ${selectedKeepsakeId === definition.id ? "selected" : ""}`}
+                      key={definition.id}
+                      onClick={() => setSelectedKeepsakeId(definition.id)}
+                      aria-label={`${definition.name}，${rarityLabels[definition.rarity]}`}
+                    >
+                      <span
+                        className="item-sprite"
+                        style={itemSpriteStyle(definition.atlasIndex)}
+                        aria-hidden="true"
+                      />
+                      <small>第 {record.acquiredWeek} 周</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <aside className="keepsake-detail">
+                {selectedKeepsakeDisplay ? (
+                  <>
+                    <span
+                      className={`item-sprite large rarity-${selectedKeepsakeDisplay.rarity}`}
+                      style={itemSpriteStyle(selectedKeepsakeDisplay.atlasIndex)}
+                      aria-hidden="true"
+                    />
+                    <small>{rarityLabels[selectedKeepsakeDisplay.rarity]}</small>
+                    <h3>{selectedKeepsakeDisplay.name}</h3>
+                    <p>{selectedKeepsakeDisplay.description}</p>
+                    {selectedKeepsakeDisplay.effectText && (
+                      <div className="keepsake-effect">
+                        <span>已知作用</span>
+                        {selectedKeepsakeDisplay.effectText}
+                      </div>
+                    )}
+                    <em>
+                      第 {keepsakes[selectedKeepsakeDisplay.id]?.acquiredWeek ?? week} 周获得
+                    </em>
+                  </>
+                ) : (
+                  <div className="keepsake-detail-empty">
+                    <span>选择一件物品</span>
+                    <p>取得后的风味文本与实际效果会记录在这里。</p>
+                  </div>
+                )}
+              </aside>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  ) : null;
+
   const achievementUi = (
     <>
       <button
@@ -5044,6 +6311,9 @@ export default function Home() {
           <span>ACHIEVEMENT UNLOCKED</span>
           <strong>◇ {achievementToast.title}</strong>
           <p>{achievementToast.description}</p>
+          {achievementToast.creditedBy && (
+            <small>来自 @{achievementToast.creditedBy}</small>
+          )}
         </aside>
       )}
       {achievementOpen && (
@@ -5090,6 +6360,9 @@ export default function Home() {
                       </p>
                       {unlockedAt && (
                         <small>
+                          {achievement.creditedBy
+                            ? `来自 @${achievement.creditedBy} · `
+                            : ""}
                           {new Date(unlockedAt).toLocaleDateString("zh-CN")}
                         </small>
                       )}
@@ -5132,6 +6405,7 @@ export default function Home() {
         />
         {saveDialog}
         {achievementUi}
+        {keepsakeUi}
       </>
     );
   }
@@ -5154,22 +6428,23 @@ export default function Home() {
           </button>
           <div className="steps" aria-label="试玩版完成">
             <span className="step done">两年竞赛路线完成</span>
-            <span className="step active">高考篇待续</span>
+            <span className="step active">高三、招考与录取</span>
           </div>
           <span className="seed-chip">{seed}</span>
         </header>
+        {keepsakeUi}
         <section className="retired-ending-card">
-          <p className="kicker">DEMO COMPLETE · THANK YOU</p>
+          <p className="kicker">COMPETITION CHAPTER COMPLETE · THANK YOU</p>
           <span className="ending-week">第二次国赛结束</span>
           <h1>感谢游玩。</h1>
           <p className="retired-lead">
-            {name}的两年生物竞赛路线暂时写到这里。高三回班、高考与大学录取将在后续版本继续；
-            本版本不会再自动推进周数，以免进入尚未完成的流程。
+            {name}的两年生物竞赛主线已经结束。接下来将进入完整的高三、强基或高考、
+            录取通知书与成年后日谈流程；竞赛经历不会消失，而会继续改变此后的人生选择。
           </p>
           <div className="retired-stats">
             <div>
               <span>四模块平均掌握</span>
-              <strong>{moduleAverage.toFixed(1)}</strong>
+              <strong>{formatNumber(moduleAverage)}</strong>
             </div>
             <div>
               <span>第二次国赛</span>
@@ -5184,8 +6459,8 @@ export default function Home() {
             <div>
               <span>最终状态</span>
               <strong>
-                SAN {playerStats.san.toFixed(1)} · 心态{" "}
-                {playerStats.mindset.toFixed(1)}
+                SAN {formatNumber(playerStats.san)} · 心态{" "}
+                {formatNumber(playerStats.mindset)}
               </strong>
             </div>
           </div>
@@ -5219,10 +6494,11 @@ export default function Home() {
           </button>
           <div className="steps" aria-label="退赛结局">
             <span className="step done">竞赛路线结束</span>
-            <span className="step active">常规路线待续</span>
+            <span className="step active">回班、高考与录取</span>
           </div>
           <span className="seed-chip">{seed}</span>
         </header>
+        {keepsakeUi}
         <section className="retired-ending-card">
           <p className="kicker">ENDING · RETURN TO CLASS</p>
           <span className="ending-week">第 {week} 周</span>
@@ -5236,26 +6512,26 @@ export default function Home() {
             <div>
               <span>当前常规积累</span>
               <strong>
-                {playerStats.academics.toFixed(1)} /{" "}
-                {regularUnlockedScore(week).toFixed(1)}
+                {formatNumber(playerStats.academics)} /{" "}
+                {formatNumber(regularUnlockedScore(week))}
               </strong>
             </div>
             <div>
               <span>高考趋势</span>
               <strong>
-                {projectedGaokaoScore(playerStats, week).toFixed(1)} / 750
+                {formatNumber(projectedGaokaoScore(playerStats, week))} / 750
               </strong>
             </div>
             <div>
               <span>离队时SAN</span>
-              <strong>{playerStats.san.toFixed(1)}</strong>
+              <strong>{formatNumber(playerStats.san)}</strong>
             </div>
           </div>
           <div className="retired-placeholder">
-            <strong>常规学习、高三与高考路线将在后续版本开放</strong>
+            <strong>竞赛路线结束，回班与高考路线从这里接续</strong>
             <p>
-              这里将继续处理回班适应、补课、旧队友关系、竞赛经历如何影响高考心态，
-              以及最终大学录取。
+              接下来会处理回班适应、补课、旧队友关系、强基或普通高考选择，
+              直至录取通知书与成年后日谈。
             </p>
           </div>
           <button
@@ -5305,6 +6581,29 @@ export default function Home() {
               <p className="folio">PERSONAL FILE / 001</p>
               <h2>{selected.title}</h2>
               <p className="dossier-quote">{selected.subtitle}</p>
+
+              <div className="gender-selector" aria-label="主角性别">
+                <span>主角性别</span>
+                <div>
+                  <button
+                    type="button"
+                    aria-pressed={playerGender === "female"}
+                    className={playerGender === "female" ? "selected" : ""}
+                    onClick={() => setPlayerGender("female")}
+                  >
+                    女生
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={playerGender === "male"}
+                    className={playerGender === "male" ? "selected" : ""}
+                    onClick={() => setPlayerGender("male")}
+                  >
+                    男生
+                  </button>
+                </div>
+                <small>影响可发展的朦胧好感与恋爱人物；挚友线不受限制。</small>
+              </div>
 
               <dl className="facts">
                 <div>
@@ -5371,7 +6670,10 @@ export default function Home() {
               </div>
               <div className="money-line">
                 <span>个人零花钱</span>
-                <strong>¥{selected.stats.pocketMoney.toFixed(1)}</strong>
+                <strong>
+                  ¥{formatNumber(selected.stats.pocketMoney)} · 每四周 +¥
+                  {formatNumber(selected.stats.monthlyPocketMoney)}
+                </strong>
               </div>
             </article>
           </div>
@@ -5393,7 +6695,6 @@ export default function Home() {
     const selectedOpeningChoice = openingEvent.choices.find(
       (choice) => choice.id === firstChoice,
     );
-    const latestRecord = weekRecords.at(-1);
     const selectedBook =
       textbooks.find((book) => book.id === selectedBookId) ?? textbooks[0];
     const selectedEventChoice = pendingEvent?.choices.find(
@@ -5424,27 +6725,26 @@ export default function Home() {
                 <span>
                   SAN{" "}
                   <strong>
-                    {(playerStats?.san ?? selected.stats.san).toFixed(1)}
+                    {formatNumber(playerStats?.san ?? selected.stats.san)}
                   </strong>
                 </span>
                 <span>
                   常规积累{" "}
                   <strong>
-                    {(playerStats?.academics ?? 0).toFixed(1)} /{" "}
-                    {regularUnlockedScore(1).toFixed(1)}
+                    {formatNumber(playerStats?.academics ?? 0)} /{" "}
+                    {formatNumber(regularUnlockedScore(1))}
                   </strong>
                 </span>
                 <span>
                   零花钱{" "}
                   <strong>
-                    ¥{(playerStats?.pocketMoney ?? selected.stats.pocketMoney).toFixed(1)}
+                    ¥{formatNumber(playerStats?.pocketMoney ?? selected.stats.pocketMoney)}
                   </strong>
                 </span>
               </div>
             </aside>
 
             <article className="event-card">
-              <p className="event-index">{openingEvent.label}</p>
               <h2>{openingEvent.title}</h2>
               {openingEvent.body.map((paragraph) => (
                 <p className="event-copy" key={paragraph}>
@@ -5471,20 +6771,48 @@ export default function Home() {
                 ))}
               </div>
 
-              {selectedOpeningChoice && (
-                <div className="decision-note" role="status">
-                  {selectedOpeningChoice.result}
-                  <span>确认后将看到本周固定安排，并分配剩余时间。</span>
-                </div>
-              )}
               <button
                 className="primary-button event-confirm"
                 onClick={confirmOpening}
                 disabled={!selectedOpeningChoice}
               >
-                确认选择，安排本周 <span>→</span>
+                记录选择，查看结果 <span>→</span>
               </button>
             </article>
+          </section>
+        </main>
+      );
+    }
+
+    if (eventResultNotice) {
+      return (
+        <main className="shell week-shell visual-novel-result-shell">
+          <header className="topbar">
+            <button className="brand-button" onClick={() => setScreen("origin")}>
+              生竞人生
+            </button>
+            <div className="steps" aria-label="事件后续">
+              <span className="step done">选择已经作出</span>
+              <span className="step active">结果揭晓</span>
+              <span className="step">继续本周</span>
+            </div>
+            <span className="seed-chip">{seed}</span>
+          </header>
+          <section className="visual-novel-result">
+            <h1>{seedRivalText(eventResultNotice.title, seed)}</h1>
+            <p className="event-result-choice">
+              你选择了：{seedRivalText(eventResultNotice.choice, seed)}
+            </p>
+            <p>{seedRivalText(eventResultNotice.result, seed)}</p>
+            <small>
+              有些影响已经进入人物关系与后续事件，但不会全部换算成即时数值公开。
+            </small>
+            <button
+              className="primary-button"
+              onClick={continueAfterEventResult}
+            >
+              把结果记下来 <span>→</span>
+            </button>
           </section>
         </main>
       );
@@ -5510,10 +6838,10 @@ export default function Home() {
               <h1>问父母要点钱</h1>
               <div className="mini-status">
                 <span>
-                  零花钱 <strong>¥{playerStats.pocketMoney.toFixed(1)}</strong>
+                  零花钱 <strong>¥{formatNumber(playerStats.pocketMoney)}</strong>
                 </span>
                 <span>
-                  家庭支持 <strong>{playerStats.familySupport.toFixed(1)}</strong>
+                  家庭支持 <strong>{formatNumber(playerStats.familySupport)}</strong>
                 </span>
                 <span>
                   此前申请 <strong>{allowanceRequestCount} 次</strong>
@@ -5521,7 +6849,6 @@ export default function Home() {
               </div>
             </aside>
             <article className="event-card allowance-card">
-              <p className="event-index">家庭事件 · 零花钱</p>
               <h2>竞赛资料家长会承担，小卖部里的东西则需要你自己解释。</h2>
               <p className="event-copy">
                 要得越多、次数越频繁，父母越可能怀疑你把精力和钱花在了无关紧要的地方。
@@ -5542,11 +6869,9 @@ export default function Home() {
                     <span>
                       <strong>{option.title}</strong>
                       <small>
-                        成功后获得 ¥{option.amount} · 家庭支持约 -
-                        {round1(
-                          option.baseSupportCost *
-                            (1 + allowanceRequestCount * 0.35),
-                        ).toFixed(1)}
+                        成功率约 {(allowanceProjection(option, playerStats).successChance * 100).toFixed(0)}%
+                        {" · "}成功后获得 ¥{option.amount} · 家庭支持约 -
+                        {formatNumber(allowanceProjection(option, playerStats).supportCost)}
                       </small>
                     </span>
                   </button>
@@ -5582,6 +6907,111 @@ export default function Home() {
       );
     }
 
+    if (pendingWeekReview && playerStats) {
+      return (
+        <main className="shell week-review-shell">
+          <header className="topbar">
+            <button className="brand-button" onClick={() => setScreen("origin")}>
+              生竞人生
+            </button>
+            <div className="steps" aria-label="每周结算">
+              <span className="step done">第 {pendingWeekReview.week} 周完成</span>
+              <span className="step active">本周回顾</span>
+              <span className="step">第 {week} 周</span>
+            </div>
+            <span className="seed-chip">{seed}</span>
+          </header>
+
+          <section className="week-review-page">
+            <aside className="week-review-title">
+              <p className="kicker">WEEK {String(pendingWeekReview.week).padStart(2, "0")} · REVIEW</p>
+              <h1>{pendingWeekReview.headline}</h1>
+              <p>
+                学习效率 {Math.round(pendingWeekReview.efficiency * 100)}% ·
+                随机发挥 {pendingWeekReview.fluctuation >= 1 ? "+" : ""}
+                {Math.round((pendingWeekReview.fluctuation - 1) * 100)}%
+              </p>
+              <div className="week-review-san">
+                <span>结算后 SAN</span>
+                <strong>{formatNumber(pendingWeekReview.sanAfter ?? playerStats.san)}</strong>
+              </div>
+            </aside>
+
+            <div className="week-review-content">
+              <section>
+                <h2>这一周把时间花在了哪里</h2>
+                <div className="week-review-actions">
+                  {(pendingWeekReview.fixedActions ?? []).map((item) => (
+                    <div key={`fixed-${item.title}`}>
+                      <span>固定</span>
+                      <strong>{item.title}</strong>
+                      <small>{item.cost} 点</small>
+                    </div>
+                  ))}
+                  {(pendingWeekReview.chosenActions ?? []).map((item) => (
+                    <div key={`chosen-${item.title}`}>
+                      <span>自主</span>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {item.count > 1 ? `${item.count} 次 · ` : ""}{item.cost} 点
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <h2>发生过的事</h2>
+                {(pendingWeekReview.moments ?? []).length > 0 ? (
+                  <div className="week-review-moments">
+                    {(pendingWeekReview.moments ?? []).map((moment, index) => (
+                      <article key={`${moment.kind}-${index}-${moment.title}`}>
+                        <span>
+                          {moment.kind === "assessment"
+                            ? "考试复盘"
+                            : moment.kind === "opening"
+                              ? "开局事件"
+                              : "本周事件"}
+                        </span>
+                        <h3>{moment.title}</h3>
+                        {moment.choice && <strong>你的选择：{moment.choice}</strong>}
+                        {moment.result && <p>{moment.result}</p>}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="week-review-empty">这一周没有额外事件。安静本身也是竞赛生活的一部分。</p>
+                )}
+              </section>
+
+              <section>
+                <h2>属性变化</h2>
+                <div className="week-review-changes">
+                  {pendingWeekReview.changes.length > 0 ? (
+                    pendingWeekReview.changes.map((change) => (
+                      <span className={change.value > 0 ? "positive" : "negative"} key={change.label}>
+                        {change.label} {change.value > 0 ? "+" : ""}
+                        {formatNumber(change.value)}
+                      </span>
+                    ))
+                  ) : (
+                    <span>没有可见属性变化</span>
+                  )}
+                </div>
+              </section>
+
+              <button
+                className="primary-button week-review-continue"
+                onClick={() => setPendingWeekReview(null)}
+              >
+                继续处理第 {week} 周 <span>→</span>
+              </button>
+            </div>
+          </section>
+        </main>
+      );
+    }
+
     if (
       retirementFlow &&
       playerStats &&
@@ -5591,6 +7021,12 @@ export default function Home() {
       const selectedRetirementChoice = scene.choices.find(
         (choice) => choice.id === retirementChoice,
       );
+      const retirementRelationshipLine =
+        retirementFlow.step >= 1 && activePartnerEntry
+          ? `${relationshipName(activePartnerEntry[0])}没有替你决定。TA先问你现在最难承受的是什么，又提醒你：留下不该只因为害怕失去这段关系，离开也不必独自面对后面的日子。`
+          : retirementFlow.step >= 1 && bestFriendEntry
+            ? `${relationshipName(bestFriendEntry[0])}把你叫到走廊尽头。TA没有使用“坚持就是胜利”，只答应无论你是否退赛，都不会把你从共同经历里删掉。`
+            : null;
       return (
         <main className="shell week-shell retirement-shell">
           <header className="topbar">
@@ -5628,13 +7064,13 @@ export default function Home() {
               <p>{generated.school}</p>
               <div className="mini-status">
                 <span>
-                  SAN <strong>{playerStats.san.toFixed(1)}</strong>
+                  SAN <strong>{formatNumber(playerStats.san)}</strong>
                 </span>
                 <span>
                   常规{" "}
                   <strong>
-                    {playerStats.academics.toFixed(1)} /{" "}
-                    {regularUnlockedScore(week).toFixed(1)}
+                    {formatNumber(playerStats.academics)} /{" "}
+                    {formatNumber(regularUnlockedScore(week))}
                   </strong>
                 </span>
                 <span>
@@ -5644,13 +7080,17 @@ export default function Home() {
             </aside>
 
             <article className="event-card retirement-card">
-              <p className="event-index">{scene.label}</p>
               <h2>{scene.title}</h2>
               {scene.body.map((paragraph) => (
                 <p className="event-copy" key={paragraph}>
                   {paragraph}
                 </p>
               ))}
+              {retirementRelationshipLine && (
+                <p className="event-copy relationship-intervention">
+                  {retirementRelationshipLine}
+                </p>
+              )}
               <div className="choice-list">
                 {scene.choices.map((choice, index) => (
                   <button
@@ -5670,19 +7110,12 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              {selectedRetirementChoice && (
-                <div className="decision-note" role="status">
-                  {selectedRetirementChoice.result}
-                </div>
-              )}
               <button
                 className="primary-button event-confirm"
                 onClick={resolveRetirementChoice}
                 disabled={!selectedRetirementChoice}
               >
-                {selectedRetirementChoice?.action === "retire"
-                  ? "确认结束竞赛路线"
-                  : "确认选择"}
+                记录选择，查看结果
                 <span>→</span>
               </button>
             </article>
@@ -5757,14 +7190,14 @@ export default function Home() {
                 </span>
                 <strong>
                   {provincialEstimate
-                    ? `${provincialEstimate.estimateLow.toFixed(1)}—${provincialEstimate.estimateHigh.toFixed(1)}`
+                    ? `${formatNumber(provincialEstimate.estimateLow)}—${formatNumber(provincialEstimate.estimateHigh)}`
                     : isNationalTheory && nationalResult
-                      ? nationalResult.theoryT.toFixed(1)
+                      ? formatNumber(nationalResult.theoryT)
                       : isNationalExperiment && nationalResult
-                        ? nationalResult.finalScore.toFixed(1)
+                        ? formatNumber(nationalResult.finalScore)
                         : pendingAssessment.type === "school" &&
                             pendingAssessment.totalScore
-                          ? `${pendingAssessment.totalScore.toFixed(1)} / 750`
+                          ? `${formatNumber(pendingAssessment.totalScore)} / 750`
                     : pendingAssessment.rank}
                 </strong>
                 <small>
@@ -5783,7 +7216,7 @@ export default function Home() {
                               : ""
                           }`
                         : pendingAssessment.type === "school"
-                          ? `校内第 ${pendingAssessment.rank} / ${pendingAssessment.participants} · 当前阶段掌握 ${pendingAssessment.regularCoverage?.toFixed(1)}%`
+                          ? `校内第 ${pendingAssessment.rank} / ${pendingAssessment.participants} · 当前阶段掌握 ${formatNumber(pendingAssessment.regularCoverage ?? 0)}%`
                     : `/ ${pendingAssessment.participants}`}
                 </small>
               </div>
@@ -5801,7 +7234,7 @@ export default function Home() {
                 pendingAssessment.projectedGaokao && (
                   <div className="assessment-warning estimate">
                     按当前积累推算，高考总分潜力约{" "}
-                    {pendingAssessment.projectedGaokao.toFixed(1)} / 750。这里只是趋势，
+                    {formatNumber(pendingAssessment.projectedGaokao)} / 750。这里只是趋势，
                     不等于最终成绩。
                   </div>
                 )}
@@ -5819,7 +7252,7 @@ export default function Home() {
                         : "分科结果与失分信号"}
                   </h2>
                 </div>
-                <span>所有分数保留一位小数</span>
+                <span>只有存在小数时才显示一位</span>
               </div>
 
               <div className="subject-results">
@@ -5827,7 +7260,7 @@ export default function Home() {
                   <div key={subject.name}>
                     <span>{subject.name}</span>
                     <strong>
-                      {subject.score.toFixed(1)}
+                      {formatNumber(subject.score)}
                       {subject.maxScore ? ` / ${subject.maxScore}` : ""}
                     </strong>
                     <i
@@ -5895,6 +7328,8 @@ export default function Home() {
       return (
         <main
           className={`shell week-shell social-event-shell ${
+            pendingEvent.visualNovel ? "visual-novel-shell" : ""
+          } ${
             weekPhase.isTraining || pendingEvent.phase === "training"
               ? "training-shell"
               : pendingEvent.phase === "exam"
@@ -5906,9 +7341,9 @@ export default function Home() {
             <button className="brand-button" onClick={() => setScreen("origin")}>
               生竞人生
             </button>
-            <div className="steps" aria-label="本周事件">
+            <div className="steps" aria-label="本周插曲">
               <span className="step done">第 {week - 1} 周已结算</span>
-              <span className="step active">随机事件</span>
+              <span className="step active">本周插曲</span>
               <span className="step">第 {week} 周待安排</span>
             </div>
             <span className="seed-chip">{seed}</span>
@@ -5916,28 +7351,24 @@ export default function Home() {
 
           <section className="week-layout">
             <aside className="week-meta">
-              <p className="kicker">社交事件已解锁</p>
+              <p className="kicker">AN UNPLANNED MOMENT</p>
               <h1>第 {week} 周</h1>
-              <p>你的关系网让这件事有机会发生。</p>
+              <p>计划之外，一件事情发生了。</p>
               <div className="mini-status">
                 <span>
-                  社交 <strong>{(playerStats?.social ?? 0).toFixed(1)}</strong>
+                  社交 <strong>{formatNumber(playerStats?.social ?? 0)}</strong>
                 </span>
                 <span>
                   同学好感{" "}
-                  <strong>{(playerStats?.peerFavor ?? 0).toFixed(1)}</strong>
+                  <strong>{formatNumber(playerStats?.peerFavor ?? 0)}</strong>
                 </span>
                 <span>
-                  SAN <strong>{(playerStats?.san ?? 0).toFixed(1)}</strong>
+                  SAN <strong>{formatNumber(playerStats?.san ?? 0)}</strong>
                 </span>
               </div>
             </aside>
 
             <article className="event-card">
-              <p className="event-index">{pendingEvent.label}</p>
-              {pendingEvent.inspiration && (
-                <p className="event-inspiration">{pendingEvent.inspiration}</p>
-              )}
               <h2>{seedRivalText(pendingEvent.title, seed)}</h2>
               {pendingEvent.body.map((paragraph) => (
                 <p className="event-copy" key={paragraph}>
@@ -5962,7 +7393,9 @@ export default function Home() {
                     <span>
                       <strong>{seedRivalText(choice.title, seed)}</strong>
                       <small>
-                        {pendingEvent.phase !== "exam" &&
+                        {pendingEvent.concealConsequences
+                          ? "结果暂不公开。人物会记住你怎样回答。"
+                          : pendingEvent.phase !== "exam" &&
                         hashSeed(
                           `${seed}-hidden-preview-${pendingEvent.id}-${choice.id}`,
                         ) %
@@ -5975,19 +7408,104 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              {selectedEventChoice && (
-                <div className="decision-note" role="status">
-                  {seedRivalText(selectedEventChoice.result, seed)}
-                </div>
-              )}
               <button
                 className="primary-button event-confirm"
                 onClick={resolvePendingEvent}
                 disabled={!selectedEventChoice}
               >
-                记录结果，继续本周 <span>→</span>
+                记录选择，查看结果{" "}
+                <span>→</span>
               </button>
             </article>
+          </section>
+        </main>
+      );
+    }
+
+    if (careerTab === "journal" && playerStats) {
+      return (
+        <main className="shell planner-shell journal-shell">
+          <header className="topbar career-topbar">
+            <button className="brand-button" onClick={() => setScreen("origin")}>
+              生竞人生
+            </button>
+            <div className="career-tabs" aria-label="生涯页面">
+              <button onClick={() => setCareerTab("planner")}>本周计划</button>
+              <button onClick={() => setCareerTab("rivals")}>竞争对手</button>
+              <button onClick={() => setCareerTab("store")}>小卖部</button>
+              <button className="active">周回顾</button>
+            </div>
+            <span className="seed-chip">{seed}</span>
+          </header>
+          {keepsakeUi}
+          <section className="journal-page">
+            <div className="journal-heading">
+              <p className="kicker">WEEKLY ARCHIVE</p>
+              <h1>时间过去以后，选择才显出形状。</h1>
+              <p>这里记录每周的固定安排、自主行动、事件选择和可见属性变化。</p>
+            </div>
+            {weekRecords.length === 0 ? (
+              <div className="journal-empty">第一周尚未结算，目前还没有回顾记录。</div>
+            ) : (
+              <div className="journal-list">
+                {[...weekRecords].reverse().map((record, index) => (
+                  <details key={record.week} open={index === 0}>
+                    <summary>
+                      <span>第 {record.week} 周</span>
+                      <strong>{record.headline}</strong>
+                      <small>SAN {formatNumber(record.sanAfter ?? 0)}</small>
+                    </summary>
+                    <div className="journal-record-grid">
+                      <section>
+                        <h2>时间安排</h2>
+                        {[...(record.fixedActions ?? []).map((item) => ({
+                          ...item,
+                          type: "固定",
+                          count: 1,
+                        })), ...(record.chosenActions ?? []).map((item) => ({
+                          ...item,
+                          type: "自主",
+                        }))].map((item) => (
+                          <p key={`${item.type}-${item.title}`}>
+                            <span>{item.type}</span>
+                            <strong>{item.title}</strong>
+                            <small>{item.count > 1 ? `${item.count}次 · ` : ""}{item.cost}点</small>
+                          </p>
+                        ))}
+                      </section>
+                      <section>
+                        <h2>事件与选择</h2>
+                        {(record.moments ?? []).length > 0 ? (
+                          (record.moments ?? []).map((moment, momentIndex) => (
+                            <article key={`${momentIndex}-${moment.title}`}>
+                              <strong>{moment.title}</strong>
+                              {moment.choice && <span>{moment.choice}</span>}
+                              {moment.result && <small>{moment.result}</small>}
+                            </article>
+                          ))
+                        ) : (
+                          <p className="journal-none">没有记录到额外事件。</p>
+                        )}
+                      </section>
+                      <section>
+                        <h2>可见变化</h2>
+                        <div className="week-review-changes">
+                          {record.changes.map((change) => (
+                            <span className={change.value > 0 ? "positive" : "negative"} key={change.label}>
+                              {change.label} {change.value > 0 ? "+" : ""}{formatNumber(change.value)}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="journal-efficiency">
+                          SAN学习效率 {Math.round(record.efficiency * 100)}% · 随机发挥{" "}
+                          {record.fluctuation >= 1 ? "+" : ""}{Math.round((record.fluctuation - 1) * 100)}%
+                        </p>
+                      </section>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
           </section>
         </main>
       );
@@ -6004,10 +7522,12 @@ export default function Home() {
               <button onClick={() => setCareerTab("planner")}>本周计划</button>
               <button onClick={() => setCareerTab("rivals")}>竞争对手</button>
               <button className="active">小卖部</button>
+              <button onClick={() => setCareerTab("journal")}>周回顾</button>
             </div>
             <span className="seed-chip">{seed}</span>
           </header>
 
+          {keepsakeUi}
           <section className="store-page">
             <div className="store-heading">
               <div>
@@ -6020,9 +7540,9 @@ export default function Home() {
               </div>
               <aside>
                 <span>当前零花钱</span>
-                <strong>¥{playerStats.pocketMoney.toFixed(1)}</strong>
+                <strong>¥{formatNumber(playerStats.pocketMoney)}</strong>
                 <small>
-                  家庭支持 {playerStats.familySupport.toFixed(1)} · 本周额外行动{" "}
+                  家庭支持 {formatNumber(playerStats.familySupport)} · 本周额外行动{" "}
                   +{weeklyBonusPoints}
                 </small>
               </aside>
@@ -6040,21 +7560,31 @@ export default function Home() {
                     : item.price;
                 const cannotAfford = playerStats.pocketMoney < salePrice;
                 return (
-                  <article className="store-item" key={item.id}>
+                  <article
+                    className={`store-item rarity-${item.rarity}`}
+                    key={item.id}
+                  >
                     <div className="store-item-top">
-                      <span>{item.category}</span>
+                      <span>
+                        {item.category} · {rarityLabels[item.rarity]}
+                      </span>
                       <strong>
                         ¥{salePrice}
                         {salePrice !== item.price && <del>¥{item.price}</del>}
                       </strong>
                     </div>
+                    <span
+                      className="item-sprite store-sprite"
+                      style={itemSpriteStyle(item.atlasIndex)}
+                      aria-hidden="true"
+                    />
                     <h2>{item.name}</h2>
                     <p>
-                      {owned > 0
+                      {item.effectVisible
                         ? item.description
-                        : item.category === "特殊" || item.category === "玩具"
-                          ? "看起来未必有用，也许会在未来触发某段经历。"
-                          : "可能短暂改变本周状态，实际效果购买或使用后才会揭晓。"}
+                        : owned > 0
+                          ? "已经收进书包或抽屉。它是否有用，要等故事真正发生时才知道。"
+                          : "看起来未必有用，也许会在未来触发某段经历。"}
                     </p>
                     <small>{item.flavor}</small>
                     <div className="store-item-actions">
@@ -6087,6 +7617,12 @@ export default function Home() {
               <div>
                 <p className="kicker">INVENTORY</p>
                 <h2>书包与抽屉</h2>
+                <button
+                  className="open-drawer-button"
+                  onClick={() => setKeepsakeOpen(true)}
+                >
+                  打开纪念物抽屉
+                </button>
               </div>
               <div>
                 {shopItems
@@ -6119,9 +7655,11 @@ export default function Home() {
               <button onClick={() => setCareerTab("planner")}>本周计划</button>
               <button className="active">竞争对手</button>
               <button onClick={() => setCareerTab("store")}>小卖部</button>
+              <button onClick={() => setCareerTab("journal")}>周回顾</button>
             </div>
             <span className="seed-chip">{seed}</span>
           </header>
+          {keepsakeUi}
           <RivalsPage
             stats={playerStats}
             week={week}
@@ -6150,6 +7688,7 @@ export default function Home() {
             <button className="active">本周计划</button>
             <button onClick={() => setCareerTab("rivals")}>竞争对手</button>
             <button onClick={() => setCareerTab("store")}>小卖部</button>
+            <button onClick={() => setCareerTab("journal")}>周回顾</button>
           </div>
           <div className="save-controls">
             <button
@@ -6166,6 +7705,7 @@ export default function Home() {
         </header>
         {saveDialog}
         {achievementUi}
+        {keepsakeUi}
 
         <section className="planner-layout">
           <aside className="status-panel">
@@ -6173,16 +7713,21 @@ export default function Home() {
               <p className="kicker">WEEKLY SCHEDULE</p>
               <strong>{String(week).padStart(2, "0")}</strong>
               <span>{weekPhase.label}</span>
-              <small>
-                {calendar.dateLabel} · 距本年度五月联赛{" "}
-                {Math.max(
-                  0,
-                  (week <= calendar.firstExamWeek
-                    ? calendar.firstExamWeek
-                    : calendar.secondExamWeek) - week,
-                )}{" "}
-                周
-              </small>
+              <div className="calendar-focus">
+                <b>{calendar.dateLabel}</b>
+                <em>
+                  距本年度五月联赛
+                  <strong>
+                    {Math.max(
+                      0,
+                      (week <= calendar.firstExamWeek
+                        ? calendar.firstExamWeek
+                        : calendar.secondExamWeek) - week,
+                    )}
+                  </strong>
+                  周
+                </em>
+              </div>
             </div>
 
             <div className="time-budget">
@@ -6224,13 +7769,13 @@ export default function Home() {
                           textbooks.find(
                             (book) => book.id === item.bookEffect?.bookId,
                           )?.shortTitle ?? "指定教材"
-                        }课程进度+${item.bookEffect.course.toFixed(1)}%`
+                        }课程进度+${formatNumber(item.bookEffect.course)}%`
                       : ""}
                     {item.bookEffect?.practice
-                      ? ` · 刷题+${item.bookEffect.practice.toFixed(1)}轮`
+                      ? ` · 刷题+${formatNumber(item.bookEffect.practice)}轮`
                       : ""}
                     {item.coachBonus
-                      ? ` · 跟随教练效率×${item.coachBonus.toFixed(1)}`
+                      ? ` · 跟随教练效率×${formatNumber(item.coachBonus)}`
                       : ""}
                   </small>
                 </div>
@@ -6250,7 +7795,7 @@ export default function Home() {
                 </small>
                 <small>
                   心态决定SAN消耗倍率：×
-                  {mindsetSanCostMultiplier(playerStats.mindset).toFixed(1)}
+                  {formatNumber(mindsetSanCostMultiplier(playerStats.mindset))}
                 </small>
               </div>
             )}
@@ -6264,6 +7809,7 @@ export default function Home() {
                   <PlannerStat label="模块三" value={playerStats.module3} />
                   <PlannerStat label="模块四" value={playerStats.module4} />
                   <PlannerStat label="思辨" value={playerStats.reasoning} />
+                  <PlannerStat label="做题速率" value={playerStats.problemSpeed} />
                   <PlannerStat
                     label="实验"
                     value={playerStats.experiment}
@@ -6278,8 +7824,8 @@ export default function Home() {
                   <div className="regular-unlock-card">
                     <span>常规积累</span>
                     <strong>
-                      {playerStats.academics.toFixed(1)} /{" "}
-                      {regularUnlockedScore(week).toFixed(1)}
+                      {formatNumber(playerStats.academics)} /{" "}
+                      {formatNumber(regularUnlockedScore(week))}
                     </strong>
                     <i>
                       <b
@@ -6292,9 +7838,9 @@ export default function Home() {
                       />
                     </i>
                     <small>
-                      高考趋势 {projectedGaokaoScore(playerStats, week).toFixed(1)} /
+                      高考趋势 {formatNumber(projectedGaokaoScore(playerStats, week))} /
                       750 · 当前阶段掌握{" "}
-                      {(regularCoverage(playerStats, week) * 100).toFixed(1)}%
+                      {formatNumber(regularCoverage(playerStats, week) * 100)}%
                     </small>
                   </div>
                   <StatusNumber label="教练好感" value={playerStats.coachFavor} />
@@ -6303,17 +7849,44 @@ export default function Home() {
                     label="家庭支持"
                     value={playerStats.familySupport}
                   />
+                  {activePartnerEntry && (
+                    <div className="close-relationship-status partner">
+                      <span>恋人 · {relationshipName(activePartnerEntry[0])}</span>
+                      <strong>好感 {formatNumber(activePartnerEntry[1].bond)}</strong>
+                      <small>
+                        信任 {formatNumber(activePartnerEntry[1].trust)} · 每两周占用1点时间 ·
+                        当前学习效率影响{" "}
+                        {formatNumber(relationshipLearningBoost(rivalRelationships) * 100)}%
+                      </small>
+                    </div>
+                  )}
+                  {!activePartnerEntry && bestFriendEntry && (
+                    <div className="close-relationship-status friend">
+                      <span>挚友 · {relationshipName(bestFriendEntry[0])}</span>
+                      <strong>亲近 {formatNumber(bestFriendEntry[1].bond)}</strong>
+                      <small>信任 {formatNumber(bestFriendEntry[1].trust)} · 会参与退赛、考试与后日谈</small>
+                    </div>
+                  )}
                   <StatusNumber label="零花钱" value={playerStats.pocketMoney} money />
                   <StatusNumber label="在队人数" value={activeTeamSize} />
+                  {allowanceNotice && (
+                    <div className="allowance-feedback" role="status">
+                      {allowanceNotice}
+                    </div>
+                  )}
                   <button
                     className="allowance-button"
                     onClick={() => {
                       setAllowanceRequestOpen(true);
                       setAllowanceChoice(null);
+                      setAllowanceNotice(null);
                     }}
                   >
                     问父母要点钱
-                    <small>次数越多，家庭支持消耗越大。</small>
+                    <small>
+                      每四周固定到账 ¥{formatNumber(selected.stats.monthlyPocketMoney)}；
+                      额外申请次数越多，家庭支持消耗越大。
+                    </small>
                   </button>
                   <button
                     className="retirement-button"
@@ -6335,9 +7908,7 @@ export default function Home() {
                       ? `退赛冷静期（第${retirementCooldownUntil}周后）`
                       : "提出退赛"}
                     <small>
-                      {retirementAttemptCount > 0
-                        ? `已经历${retirementAttemptCount}轮协商；反复提出会扩大冲突。`
-                        : "申请会持续数周，并进入家长与教练协商。"}
+                      这不是即时决定；身边的人会根据你的成绩与关系作出回应。
                     </small>
                   </button>
                 </div>
@@ -6352,32 +7923,9 @@ export default function Home() {
                 <h1>时间不会自己流向正确的地方。</h1>
               </div>
               <p>
-                行动可以重复选择。结算后必定触发一个本周事件；当前事件链含{" "}
-                {linkedEventCount + weeklySocialEvents.length} 个固定或条件节点，
-                另含退赛协商、队友离队与人物关系动态事件。
+                行动可以重复选择。排满剩余时间后结算；有些选择的影响要过一段时间才会显现。
               </p>
             </div>
-
-            {latestRecord && (
-              <div className="week-result" role="status">
-                <span>第 {latestRecord.week} 周结算</span>
-                <strong>{latestRecord.headline}</strong>
-                <p>
-                  SAN效率 {(latestRecord.efficiency * 100).toFixed(0)}% ·
-                  当周波动{" "}
-                  {latestRecord.fluctuation >= 1 ? "+" : ""}
-                  {((latestRecord.fluctuation - 1) * 100).toFixed(0)}%
-                </p>
-                <div>
-                  {latestRecord.changes.map((change) => (
-                    <em key={change.label}>
-                      {change.label} {change.value > 0 ? "+" : ""}
-                      {change.value.toFixed(1)}
-                    </em>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <section className="book-section">
               <div className="section-heading">
@@ -6422,7 +7970,7 @@ export default function Home() {
                       }}
                     >
                       <span>{moduleLabel}</span>
-                      <strong>{average.toFixed(1)}%</strong>
+                      <strong>{formatNumber(average)}%</strong>
                       <small>{disciplines}</small>
                     </button>
                   );
@@ -6450,8 +7998,8 @@ export default function Home() {
                         <i style={{ width: `${progress}%` }} />
                       </div>
                       <em>
-                        有效 {progress.toFixed(1)}% · 记忆{" "}
-                        {state?.retention.toFixed(1) ?? "100.0"}%
+                        有效 {formatNumber(progress)}% · 记忆{" "}
+                        {formatNumber(state?.retention ?? 100)}%
                       </em>
                     </button>
                   );
@@ -6468,25 +8016,25 @@ export default function Home() {
                       <span>
                         课程掌握{" "}
                         <strong>
-                          {playerStats.bookStudy[selectedBook.id].course.toFixed(1)}%
+                          {formatNumber(playerStats.bookStudy[selectedBook.id].course)}%
                         </strong>
                       </span>
                       <span>
                         笔记{" "}
                         <strong>
-                          {playerStats.bookStudy[selectedBook.id].notes.toFixed(1)}%
+                          {formatNumber(playerStats.bookStudy[selectedBook.id].notes)}%
                         </strong>
                       </span>
                       <span>
                         刷题{" "}
                         <strong>
-                          {playerStats.bookStudy[selectedBook.id].practice.toFixed(1)} 轮
+                          {formatNumber(playerStats.bookStudy[selectedBook.id].practice)} 轮
                         </strong>
                       </span>
                       <span>
                         保持率{" "}
                         <strong>
-                          {playerStats.bookStudy[selectedBook.id].retention.toFixed(1)}%
+                          {formatNumber(playerStats.bookStudy[selectedBook.id].retention)}%
                         </strong>
                       </span>
                     </div>
@@ -6560,13 +8108,13 @@ export default function Home() {
                         <small>{action.description}</small>
                         <i>
                           {action.bookEffect?.course
-                            ? `课程 +${action.bookEffect.course.toFixed(1)}% · `
+                            ? `课程 +${formatNumber(action.bookEffect.course)}% · `
                             : ""}
                           {action.bookEffect?.notes
-                            ? `笔记 +${action.bookEffect.notes.toFixed(1)}% · `
+                            ? `笔记 +${formatNumber(action.bookEffect.notes)}% · `
                             : ""}
                           {action.bookEffect?.practice
-                            ? `刷题 +${action.bookEffect.practice.toFixed(1)}轮 · `
+                            ? `刷题 +${formatNumber(action.bookEffect.practice)}轮 · `
                             : ""}
                           {effectPreview(action.effects)}
                         </i>
@@ -6605,7 +8153,7 @@ export default function Home() {
                         <small>{action.description}</small>
                         <i>
                           当前专项{" "}
-                          {playerStats?.experimentModules[module].toFixed(1)} ·
+                          {formatNumber(playerStats?.experimentModules[module] ?? 0)} ·
                           SAN消耗较高
                         </i>
                       </button>
@@ -6634,17 +8182,10 @@ export default function Home() {
                       .map((action) => {
                         const shownCost =
                           action.id === "slack-off"
-                            ? Math.min(
-                                3,
-                                1 +
-                                  Math.floor(
-                                    ((playerStats?.slackDependence ?? 0) +
-                                      schedule.filter(
-                                        (item) => item.id === "slack-off",
-                                      ).length) /
-                                      3,
-                                  ),
-                              )
+                            ? slackProjection(
+                                playerStats,
+                                schedule.filter((item) => item.id === "slack-off").length,
+                              ).cost
                             : action.cost;
                         const cannotAfford =
                           (action.effects.pocketMoney ?? 0) < 0 &&
@@ -6663,9 +8204,13 @@ export default function Home() {
                             <small>{action.description}</small>
                             <i>
                               {action.id === "slack-off"
-                                ? (playerStats?.slackDependence ?? 0) >= 3
-                                  ? "依赖正在形成：恢复递减、耗时增加"
-                                  : "即时逃避很舒服，长期代价暂不明确"
+                                ? (() => {
+                                    const current = slackProjection(
+                                      playerStats,
+                                      schedule.filter((item) => item.id === "slack-off").length,
+                                    );
+                                    return `本次 SAN +${formatNumber(current.san)} · 心态 ${formatNumber(current.mindset)}；长期影响不会立刻出现`;
+                                  })()
                                 : effectPreview(action.effects)}
                             </i>
                           </button>
@@ -6691,6 +8236,14 @@ export default function Home() {
             </div>
 
             <div className="schedule-list">
+              {relationshipTimeCost > 0 && activePartnerEntry && (
+                <div className="schedule-item fixed-relationship-time">
+                  <span>♥</span>
+                  <strong>与{relationshipName(activePartnerEntry[0])}相处</strong>
+                  <small>-1 点</small>
+                  <i>固定</i>
+                </div>
+              )}
               {schedule.length === 0 ? (
                 <p className="empty-schedule">
                   从左侧选择行动。相同的学习行动可以在一周内重复多次。
@@ -6731,7 +8284,10 @@ export default function Home() {
   return (
     <main className="shell">
       <header className="topbar">
-        <button className="brand-button">生竞人生</button>
+        <div className="origin-brand-credit">
+          <button className="brand-button">生竞人生</button>
+          <span>感谢生竞幻想乡群友共创</span>
+        </div>
         <div className="steps" aria-label="开局进度">
           <span className="step active">01 起点</span>
           <span className="step">02 档案</span>
@@ -6752,10 +8308,11 @@ export default function Home() {
           </button>
           {saveNotice && <small>{saveNotice}</small>}
         </div>
-        <span className="version">PROVINCIAL BUILD · 0.9</span>
+        <span className="version">HUMANITY BUILD · 1.0</span>
       </header>
       {saveDialog}
       {achievementUi}
+      {keepsakeUi}
 
       <section className="origin-layout">
         <div className="origin-intro">
@@ -6774,6 +8331,29 @@ export default function Home() {
               onChange={(event) => setName(event.target.value)}
               placeholder="输入姓名"
             />
+          </div>
+
+          <div className="gender-selector origin-gender-selector" aria-label="选择主角性别">
+            <span>主角性别</span>
+            <div>
+              <button
+                type="button"
+                aria-pressed={playerGender === "female"}
+                className={playerGender === "female" ? "selected" : ""}
+                onClick={() => setPlayerGender("female")}
+              >
+                女生
+              </button>
+              <button
+                type="button"
+                aria-pressed={playerGender === "male"}
+                className={playerGender === "male" ? "selected" : ""}
+                onClick={() => setPlayerGender("male")}
+              >
+                男生
+              </button>
+            </div>
+            <small>影响可以发展朦胧好感与恋爱的人物；挚友线不受限制。</small>
           </div>
         </div>
 
@@ -6942,7 +8522,7 @@ function RivalsPage({
             {knownCount} / {rivals.length}
           </strong>
           <small>
-            社交 {stats.social.toFixed(1)} · 同学好感 {stats.peerFavor.toFixed(1)}
+            社交 {formatNumber(stats.social)} · 同学好感 {formatNumber(stats.peerFavor)}
           </small>
         </div>
       </div>
@@ -6951,6 +8531,8 @@ function RivalsPage({
         <strong>社交不是单纯的好感加成。</strong>
         <span>
           它决定你能否听见训练群之外的消息、了解对手的学习方式，并解锁共同学习事件。
+          “综合实力估值”是根据对手起点、年级、训练进度和近期状态得到的0—100情报值，
+          用于比较大致阶段，不等于任何一次考试分数。
         </span>
       </div>
 
@@ -6978,23 +8560,12 @@ function RivalsPage({
                   const canStudy =
                     unlocked && stats.peerFavor >= 18 && remainingTime >= 1;
                   const snapshot = rivalSnapshot(rival, seed, week);
-                  const relationship = relationships[rival.id] ?? {
-                    bond: 0,
-                    tension: 0,
-                    romance: 0,
-                  };
-                  const relationshipRoute =
-                    relationship.romance >= 30
-                      ? "暧昧"
-                      : relationship.tension >= 35
-                        ? "宿敌"
-                        : relationship.bond >= 38
-                          ? "好友"
-                          : relationship.tension >= 16
-                            ? "竞争升温"
-                            : relationship.bond >= 18
-                              ? "逐渐熟悉"
-                              : "普通队友";
+                  const relationship = normalizeRelationship(
+                    relationships[rival.id],
+                    seed,
+                    rival.id,
+                  );
+                  const relationshipRoute = relationshipRouteLabel(relationship);
                   const hasRetired = retiredRivalIds.includes(rival.id);
                   return (
                     <article
@@ -7004,7 +8575,9 @@ function RivalsPage({
                       key={rival.id}
                     >
                       <div className="rival-card-top">
-                        <span>{rival.gradeRelation}</span>
+                        <span>
+                          {rival.gradeRelation} · {identity.gender === "female" ? "女" : "男"}
+                        </span>
                         <em>
                           {hasRetired
                             ? "已退赛"
@@ -7030,16 +8603,19 @@ function RivalsPage({
                               <dt>关系走向</dt>
                               <dd>
                                 {relationshipRoute} · 亲近{" "}
-                                {relationship.bond.toFixed(1)} · 张力{" "}
-                                {relationship.tension.toFixed(1)}
+                                {formatNumber(relationship.bond)} · 张力{" "}
+                                {formatNumber(relationship.tension)}
+                                {relationship.route === "dating" && (
+                                  <> · 信任 {formatNumber(relationship.trust)}</>
+                                )}
                               </dd>
                             </div>
                             <div>
                               <dt>能力情报</dt>
                               <dd>
                                 {strengthKnown
-                                  ? `${rival.hiddenStrength} · 当前估计 ${snapshot.level.toFixed(1)} · ${snapshot.trendLabel}`
-                                  : `还需 ${Math.max(0, rival.revealSocial + 8 - stats.social).toFixed(1)} 点社交以确认`}
+                                  ? `${rival.hiddenStrength} · 综合实力估值 ${formatNumber(snapshot.level)} / 100（${rivalStrengthBand(snapshot.level)}）· ${snapshot.trendLabel}`
+                                  : `还需 ${formatNumber(Math.max(0, rival.revealSocial + 8 - stats.social))} 点社交以确认`}
                               </dd>
                             </div>
                           </dl>
@@ -7069,7 +8645,7 @@ function RivalsPage({
                           <strong>{appeared ? "情报不足" : "尚未出现"}</strong>
                           <span>
                             {appeared
-                              ? `社交达到 ${rival.revealSocial.toFixed(1)} 后解锁`
+                              ? `社交达到 ${formatNumber(rival.revealSocial)} 后解锁`
                               : `第 ${rival.revealWeek} 周后进入名单`}
                           </span>
                         </div>
@@ -7096,7 +8672,7 @@ function effectPreview(effects: GameEffect) {
     .map(([key, label]) => {
       const value = effects[key];
       if (typeof value !== "number" || value === 0) return null;
-      return `${label}${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+      return `${label}${value > 0 ? "+" : ""}${formatNumber(value)}`;
     })
     .filter(Boolean);
   return parts.join(" · ");
@@ -7191,19 +8767,19 @@ function PostCareerScreen({
           <div className="post-vitals">
             <div>
               <span>六科知识基准</span>
-              <strong>{postKnowledgeTotal(state).toFixed(1)} / 750</strong>
+              <strong>{formatNumber(postKnowledgeTotal(state))} / 750</strong>
             </div>
             <div>
               <span>SAN</span>
-              <strong>{state.san.toFixed(1)}</strong>
+              <strong>{formatNumber(state.san)}</strong>
             </div>
             <div>
               <span>心态</span>
-              <strong>{state.mindset.toFixed(1)}</strong>
+              <strong>{formatNumber(state.mindset)}</strong>
             </div>
             <div>
               <span>强基专项</span>
-              <strong>{state.strongPrep.toFixed(1)}</strong>
+              <strong>{formatNumber(state.strongPrep)}</strong>
             </div>
           </div>
 
@@ -7219,7 +8795,7 @@ function PostCareerScreen({
                   />
                 </div>
                 <strong>
-                  {value.toFixed(1)} / {postSubjectMaxima[subject]}
+                  {formatNumber(value)} / {postSubjectMaxima[subject]}
                 </strong>
               </div>
             ))}
@@ -7245,7 +8821,21 @@ function PostCareerScreen({
           <p className="kicker">{scene.kicker}</p>
           <h1>{scene.title}</h1>
           <p className="post-scene-lead">{scene.lead}</p>
-          <p className="post-scene-detail">{scene.detail}</p>
+          {!isEnding && <p className="post-scene-detail">{scene.detail}</p>}
+
+          {isEnding && state.ending?.futureTitle && (
+            <section className="future-epilogue">
+              <span>多年以后 · {state.ending.futureTitle}</span>
+              {(state.ending.epilogueParagraphs ?? [scene.detail]).map(
+                (paragraph, index) => (
+                  <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>
+                ),
+              )}
+            </section>
+          )}
+          {isEnding && !state.ending?.futureTitle && (
+            <p className="post-scene-detail">{scene.detail}</p>
+          )}
 
           {state.lastResult && !isEnding && (
             <div className="post-result">
@@ -7258,7 +8848,7 @@ function PostCareerScreen({
             <div className="gaokao-result">
               <div>
                 <span>高考总分</span>
-                <strong>{state.gaokao.total.toFixed(1)} / 750</strong>
+                <strong>{formatNumber(state.gaokao.total)} / 750</strong>
               </div>
               <div>
                 <span>全省位次</span>
@@ -7273,7 +8863,7 @@ function PostCareerScreen({
           {state.strongResult?.written !== undefined && (
             <div className="strong-result">
               <span>强基笔试</span>
-              <strong>{state.strongResult.written.toFixed(1)}</strong>
+              <strong>{formatNumber(state.strongResult.written)}</strong>
               <small>
                 {state.strongResult.enteredInterview
                   ? "已进入面试"
@@ -7327,7 +8917,7 @@ function PlannerStat({
       <div>
         <i style={{ width: `${locked ? 0 : value}%` }} />
       </div>
-      <strong>{locked ? "未解锁" : value.toFixed(1)}</strong>
+      <strong>{locked ? "未解锁" : formatNumber(value)}</strong>
     </div>
   );
 }
@@ -7346,7 +8936,7 @@ function StatusNumber({
       <span>{label}</span>
       <strong>
         {money ? "¥" : ""}
-        {value.toFixed(1)}
+        {formatNumber(value)}
       </strong>
     </div>
   );
@@ -7359,7 +8949,7 @@ function CompactStat({ name, value }: { name: string; value: number }) {
       <div className="bar" aria-label={`${name} ${value}`}>
         <i style={{ width: `${value}%` }} />
       </div>
-      <strong>{value.toFixed(1)}</strong>
+      <strong>{formatNumber(value)}</strong>
     </div>
   );
 }
@@ -7368,7 +8958,7 @@ function Stat({ name, value }: { name: string; value: number }) {
   return (
     <div className="stat">
       <span>{name}</span>
-      <strong>{value.toFixed(1)}</strong>
+      <strong>{formatNumber(value)}</strong>
       <small>{statLabel(value)}</small>
     </div>
   );
