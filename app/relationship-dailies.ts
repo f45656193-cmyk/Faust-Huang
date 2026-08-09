@@ -44,16 +44,48 @@ function hashSeed(value: string) {
   return Math.abs(hash >>> 0);
 }
 
-function personalityAside(candidate: RelationshipCandidate) {
+function pickVariant(key: string, lines: string[]) {
+  return lines[hashSeed(key) % lines.length];
+}
+
+function personalityAside(candidate: RelationshipCandidate, sceneKey: string) {
   const { name } = candidate.rival;
   const lines = {
-    reserved: `${name}仍旧不把关心说得很满，真正的意思藏在提前整理好的东西里。`,
-    warm: `${name}总会先照顾人的感受，再讨论那件事究竟应该怎样解决。`,
-    competitive: `${name}连表达在意都像在下战书，好像温柔也必须附带一个可以检验的目标。`,
-    playful: `${name}习惯用玩笑替沉默开一道口子，等你笑了，才把真正想说的话放进去。`,
-    curious: `${name}没有急着给结论，而是继续追问你当时为什么会那样想。`,
+    reserved: [
+      `${name}仍旧不把关心说得很满，真正的意思藏在提前整理好的东西里。`,
+      `${name}说得很少，却把你随口提过的细节放进了下一次行动。`,
+      `${name}把停顿留得很长；那不是冷淡，而是在确认哪句话不会越过你的边界。`,
+      `${name}没有给这件事命名，只把原本独自完成的步骤默默分给了你一半。`,
+    ],
+    warm: [
+      `${name}总会先照顾人的感受，再讨论那件事究竟应该怎样解决。`,
+      `${name}很快看见了气氛里最不舒服的部分，也没有急着替任何人圆场。`,
+      `${name}习惯先把别人接住；这一次，TA也试着把自己的真实需要留在谈话里。`,
+      `${name}的关心仍然自然，却不再假装自己永远不需要回报。`,
+    ],
+    competitive: [
+      `${name}连表达在意都像在下战书，好像温柔也必须附带一个可以检验的目标。`,
+      `${name}嘴上仍在计算输赢，行动却已经把你划进了“不能随便丢下”的一边。`,
+      `${name}不肯用安慰降低标准，只把下一次并肩的机会认真留给了你。`,
+      `${name}把情绪压进一句挑衅里；你已经能听出那里面并不只有胜负。`,
+    ],
+    playful: [
+      `${name}习惯用玩笑替沉默开一道口子，等你笑了，才把真正想说的话放进去。`,
+      `${name}先把尴尬改写成一个烂梗，又在笑声退下去以后认真看向你。`,
+      `${name}给这件事取了一个荒唐代号，仿佛有了代号，难过也能被两个人共同保管。`,
+      `${name}仍在负责让气氛轻一点，但你开始看得出哪一次笑是在请求你留下。`,
+    ],
+    curious: [
+      `${name}没有急着给结论，而是继续追问你当时为什么会那样想。`,
+      `${name}把一个看似普通的细节拆成了好几个问题，却在你沉默时及时停下。`,
+      `${name}真正想知道的不是正确答案，而是这个答案在你身上怎样形成。`,
+      `${name}第一次没有继续分析，只把尚未解决的问题和你一起留到了以后。`,
+    ],
   };
-  return lines[candidate.personalityKey];
+  return pickVariant(
+    `${candidate.rival.id}-${sceneKey}-${candidate.personalityKey}-aside`,
+    lines[candidate.personalityKey],
+  );
 }
 
 function innerConflictFor(candidate: RelationshipCandidate, seed: string) {
@@ -69,7 +101,11 @@ function innerConflictFor(candidate: RelationshipCandidate, seed: string) {
   return conflicts[hashSeed(`${seed}-${candidate.rival.id}-inner-conflict`) % conflicts.length];
 }
 
-function personalityReaction(candidate: RelationshipCandidate, tone: DailyTone) {
+function personalityReaction(
+  candidate: RelationshipCandidate,
+  tone: DailyTone,
+  sceneKey: string,
+) {
   const { name } = candidate.rival;
   const positive = ["care", "honest", "boundary"].includes(tone);
   const negative = ["avoid", "hurt"].includes(tone);
@@ -100,10 +136,19 @@ function personalityReaction(candidate: RelationshipCandidate, tone: DailyTone) 
         ? `${name}追问到一半停了下来；敷衍让TA第一次失去继续理解的兴趣。`
         : `${name}从细节里提出了新的问题，你们因此比原计划多聊了很久。`,
   };
-  return reactions[candidate.personalityKey];
+  // 具体事件本身已经拥有完整结果；性格回声只偶尔出现，避免每次选择
+  // 都重复同一句人物小结。
+  return hashSeed(`${candidate.rival.id}-${sceneKey}-${tone}-reaction`) % 3 === 0
+    ? reactions[candidate.personalityKey]
+    : "";
 }
 
-function conflictReaction(conflict: RelationshipInnerConflict, tone: DailyTone) {
+function conflictReaction(
+  conflict: RelationshipInnerConflict,
+  tone: DailyTone,
+  variationKey: string,
+) {
+  if (hashSeed(`${variationKey}-${conflict}-${tone}`) % 2 !== 0) return "";
   if (conflict === "abandonment") {
     if (tone === "avoid" || tone === "hurt") return "这次撤退碰到了TA最不愿承认的恐惧：重要的人总会在没有解释时离开。";
     if (tone === "honest" || tone === "care") return "明确而稳定的回应，比任何夸张承诺都更能缓解TA对失去关系的警惕。";
@@ -635,6 +680,268 @@ const templates: DailyTemplate[] = [
     ],
   },
 
+  // 新增暧昧日常：不把每一次靠近都写成借笔记，也不让选项脱离当下情境。
+  {
+    key: "photocopier-last-page",
+    stage: "crush",
+    title: (name) => `复印机卡在最后一页，${name}和你一起留在空办公室。`,
+    body: () => [
+      "那页恰好是你们明天都要用的图。机器反复发出失败提示，走廊的灯则一盏盏熄灭。",
+      "你们已经熟悉到可以共同抱怨，却还没有熟悉到能自然解释为什么谁都没让另一个人先走。",
+    ],
+    choices: () => [
+      { tone: "care", title: "让TA先回去，自己把最后一页处理好", result: "对方没有走，只把另一把椅子拖了过来。你们最终手抄了两份，也共同错过了门禁前最从容的十分钟。", effects: { peerFavor: 1, san: -0.3 } },
+      { tone: "light", title: "给复印机做一次临终诊断", result: "你们对着说明书编出一份荒谬病历。机器没有被治好，等待却第一次像一段只属于两个人的时间。", effects: { san: 1, peerFavor: 0.7 } },
+      { tone: "practical", title: "拍清楚原页，明早去校外打印", result: "问题被迅速解决。第二天TA带来两份打印件，其中一份的页角写着你的名字。", effects: { peerFavor: 0.8, pocketMoney: -3 } },
+    ],
+  },
+  {
+    key: "voice-message-breath",
+    stage: "crush",
+    title: (name) => `${name}发来一段讲题语音，结尾忘了按停止。`,
+    body: () => [
+      "正确答案之后还有十几秒翻书声、一次很轻的叹气，以及一句几乎听不清的“TA应该已经睡了吧”。",
+      "你不知道该不该承认自己听到了。某些无意留下的声音，比刻意说出口的话更接近心意。",
+    ],
+    choices: () => [
+      { tone: "honest", title: "只说自己听完了，包括最后一句", result: "聊天框安静了很久。对方最后回道：“那你为什么还没睡？”问题没有被否认，只被轻轻转向了你。", effects: { peerFavor: 1.2, san: -0.2 } },
+      { tone: "care", title: "回复答案，也提醒TA早点休息", result: "你给无意暴露的部分留了体面。第二天见面时，TA主动问你昨晚究竟听到了多少。", effects: { peerFavor: 0.9, mindset: 0.3 } },
+      { tone: "avoid", title: "假装只听到讲题内容", result: "对方也配合地假装一切正常。那十几秒没有消失，只变成了两个人都知道的留白。", effects: { peerFavor: 0.1, san: 0.2 } },
+    ],
+  },
+  {
+    key: "scarf-return",
+    stage: "crush",
+    title: (name) => `${name}把借走的围巾洗好还来，袋子里多了一张收据。`,
+    body: () => [
+      "收据背面写着很短的清洗说明，又被划掉一半。你分不清这是过分认真，还是一种不敢表现得太明显的在意。",
+      "围巾本来只是保暖用品，此刻却突然拥有了需要谨慎接住的重量。",
+    ],
+    choices: () => [
+      { tone: "light", title: "问这是否属于实验器材规范归还", result: "对方让你少贫嘴，耳朵却比天气更红。那张收据最后被你夹进了书里。", effects: { san: 1, peerFavor: 0.8 } },
+      { tone: "honest", title: "说自己很喜欢TA这样认真对待小事", result: "夸奖落在了具体的人身上。对方没有躲开，只问你下次还会不会借。", effects: { peerFavor: 1.1, mindset: 0.2 } },
+      { tone: "practical", title: "收好围巾，把袋子折平还给TA", result: "你们都维持了足够安全的分寸。袋子里那句被划掉的话却在你脑中停留了一整天。", effects: { peerFavor: 0.6 } },
+    ],
+  },
+  {
+    key: "team-meeting-glance",
+    stage: "crush",
+    title: (name) => `教练在会上发火时，你和${name}同时抬头看向彼此。`,
+    body: () => [
+      "没有人敢接话。那一眼只有一秒，却完整包含了无奈、警惕和一句不能在此刻说出口的吐槽。",
+      "共同的秘密有时并不宏大，只是在人群中确定另一个人也看见了同一件事。",
+    ],
+    choices: () => [
+      { tone: "boundary", title: "会后再私下确认彼此的感受", result: "你们没有把愤怒扩大成失控的抱怨，只确认刚才那种不适不是一个人的错觉。", effects: { peerFavor: 1, san: 0.5 } },
+      { tone: "light", title: "在草稿纸角落画一个只有TA懂的符号", result: "对方低头时差点笑出来。那枚符号后来成了许多艰难会议里的暗号。", effects: { san: 1, peerFavor: 0.8 } },
+      { tone: "hurt", title: "会后当众说TA刚才也很不满", result: "你用共同目光替自己的判断寻找证人，也让对方被迫站进了冲突。", effects: { peerFavor: -1.2, coachFavor: -0.5 } },
+    ],
+  },
+  {
+    key: "family-pickup",
+    stage: "crush",
+    title: (name) => `${name}的家长来接TA，目光在你们之间停了一下。`,
+    body: (name) => [
+      `${name}立刻把刚才的话题改成一道题，语速快得有些刻意。车门打开以后，TA没有像平时那样继续道别。`,
+      "你第一次意识到，这段尚未命名的关系已经进入另一个家庭的视野，而你甚至不知道那里允许怎样的解释。",
+    ],
+    minWeek: 24,
+    choices: () => [
+      { tone: "care", title: "不追问，等TA安全到家后再联系", result: "晚些时候，对方主动说明家里对恋爱非常敏感。你没有要求TA当场勇敢，这让谈话得以继续。", effects: { peerFavor: 1.1, mindset: 0.3 } },
+      { tone: "honest", title: "第二天问TA昨晚是否因此为难", result: "问题没有装作什么都没发生，也没有要求交出家庭隐私。对方第一次讲起家里的规则。", effects: { peerFavor: 1, san: -0.2 } },
+      { tone: "hurt", title: "抱怨TA在家长面前立刻和自己撇清", result: "你只看见被藏起来的委屈，却没有先看见对方必须回到那辆车里的处境。", effects: { peerFavor: -1.3, san: -0.7 } },
+    ],
+  },
+  {
+    key: "exam-pencil",
+    stage: "crush",
+    title: (name) => `进考场前，${name}把一支削好的铅笔塞进你手里。`,
+    body: () => [
+      "对方说只是备用，笔杆上却贴着一小段你常用颜色的胶带。广播正在催促入场，没有时间追问它是不是特意准备。",
+      "考前的任何东西都容易被误解成护身符。真正重要的，也许只是有人记得你会忘带什么。",
+    ],
+    when: (ctx) => ctx.weeksToProvincial !== undefined && ctx.weeksToProvincial <= 1,
+    choices: () => [
+      { tone: "care", title: "接下，考完再完整道谢", result: "你没有把一支笔变成必须考好的债。出场时，对方先问的也不是分数，而是笔好不好写。", effects: { san: 0.8, peerFavor: 1 } },
+      { tone: "light", title: "说如果押中题型就给它立传", result: "考前紧绷被一个很小的玩笑撬开。进门时，你们都比刚才更像自己。", effects: { san: 1.1, peerFavor: 0.6 } },
+      { tone: "avoid", title: "坚持用自己的笔，不接受任何暗示", result: "谨慎本身没有错。只是你拒绝得像在划清关系，对方把手收回得很快。", effects: { peerFavor: -0.5, mindset: 0.2 } },
+    ],
+  },
+  {
+    key: "lost-keychain",
+    stage: "crush",
+    title: (name) => `${name}丢了一个很旧的钥匙扣，整晚都显得心不在焉。`,
+    body: () => [
+      "它不值钱，却陪TA从初中走到现在。所有人都说再买一个就好，只有你注意到对方已经悄悄找了三遍走廊。",
+      "在意一个人，往往先表现为愿意认真对待那些在别人看来不值得的东西。",
+    ],
+    choices: () => [
+      { tone: "care", title: "训练结束后陪TA按路线重新找一遍", result: "钥匙扣最后卡在楼梯缝里。找到的那一刻，对方抱住你半秒，又像意识到什么似的立刻松开。", effects: { peerFavor: 1.3, san: 0.8 } },
+      { tone: "practical", title: "询问监控和值日同学，缩小范围", result: "你没有用热情代替方法。找回以后，TA认真把你的名字写进了失物招领记录的感谢栏。", effects: { peerFavor: 1, problemSpeed: 0.1 } },
+      { tone: "hurt", title: "劝TA别为这种小东西耽误学习", result: "对方点头回座位。那晚课程完成得很好，你也从此很少再听见与钥匙扣有关的故事。", effects: { peerFavor: -1 } },
+    ],
+  },
+  {
+    key: "midterm-silence",
+    stage: "crush",
+    title: (name) => `期中成绩出来后，${name}一整天没有回你的消息。`,
+    body: () => [
+      "消息停在已读以前。你知道TA常规成绩退步，也知道家里很可能正在重新讨论竞赛，可不知道此刻的沉默究竟需要陪伴还是空间。",
+      "暧昧最容易把不确定放大：你担心的是TA的处境，也担心自己是否根本不在TA需要的人之列。",
+    ],
+    minWeek: 28,
+    choices: () => [
+      { tone: "boundary", title: "只发一句“需要时我在”，不连续追问", result: "深夜，对方回了一个很长的句号，又过了几分钟才开始说家里的争吵。你留下了入口，没有堵住出口。", effects: { peerFavor: 1.1, san: -0.2 } },
+      { tone: "care", title: "把明天的讲义整理好放在TA桌上", result: "你没有要求情绪立刻被解释。第二天，讲义旁多了一张写着“谢谢”的便利贴。", effects: { peerFavor: 0.9, reasoning: 0.1 } },
+      { tone: "hurt", title: "质问TA为什么只在心情好时靠近", result: "你的不安是真的，却在最坏的时机要求对方先证明关系。消息终于回复，内容只剩道歉。", effects: { peerFavor: -1.5, san: -1 } },
+    ],
+  },
+
+  // 新增恋爱日常：把“谈上以后”的生活写成具体协商，而不是反复约会和互相监督。
+  {
+    key: "delayed-reply",
+    stage: "dating",
+    title: (name) => `${name}隔了整整一天才回复你的消息。`,
+    body: () => [
+      "没有争吵，也没有明显理由。等待让普通问候逐渐长出最坏的解释：厌倦、家长发现，或者关系已经不再重要。",
+      "亲密不会自动消除不确定。它只给了你们一次把回复习惯说清楚的机会。",
+    ],
+    choices: () => [
+      { tone: "honest", title: "说明自己担心过，也询问发生了什么", result: "对方坦白手机被家里暂时收走。你们没有争论谁更委屈，只约定以后能提前说明时就说明。", effects: { peerFavor: 1, mindset: 0.3 } },
+      { tone: "boundary", title: "约定忙碌不必秒回，但失联要留安全信号", result: "规则听起来不浪漫，却让下一次沉默不再自动变成关系危机。", effects: { peerFavor: 0.9, san: 0.5 } },
+      { tone: "hurt", title: "故意再晾TA一天作为回应", result: "两段沉默没有抵消，只证明伤害也可以被公平复制。", effects: { peerFavor: -1.6, san: -0.8 } },
+    ],
+  },
+  {
+    key: "homework-call",
+    stage: "dating",
+    title: (name) => `你和${name}第一次打着电话各自写作业。`,
+    body: () => [
+      "电话里大多数时候只有翻页和偶尔的叹气。陪伴让夜晚不再那么漫长，也让你们很容易把睡眠继续向后推。",
+      "不是所有亲密都需要说话；不是所有陪伴都应该无限延长。",
+    ],
+    choices: () => [
+      { tone: "boundary", title: "约定十一点准时挂断，不以舍不得为理由熬夜", result: "挂断前有一点遗憾，第二天清醒地见面时却没有任何人后悔。", effects: { san: 0.8, peerFavor: 0.8 } },
+      { tone: "light", title: "每完成一页就敲一下桌子报数", result: "奇怪的节奏让作业意外顺利。敲到最后一下时，你们像完成了一次只有两人的仪式。", effects: { san: 0.8, reasoning: 0.1 } },
+      { tone: "hurt", title: "一直等TA先提出挂断", result: "谁都不愿显得先厌倦，电话因此拖到凌晨。第二天两个人都在课上失去耐心。", effects: { san: -1.2, peerFavor: -0.4 } },
+    ],
+  },
+  {
+    key: "teammate-suspects",
+    stage: "dating",
+    title: (name) => `队友忽然问你和${name}是不是“有点不一样”。`,
+    body: () => [
+      "问题用玩笑说出，周围几个人却同时安静了一秒。公开与否不再只是你一个人的决定，也会改变对方在队里的处境。",
+      "秘密可以保护关系，也可能让其中一个人长期承担被否认的感觉。",
+    ],
+    minWeek: 32,
+    choices: () => [
+      { tone: "boundary", title: "先含糊带过，之后和TA共同决定公开边界", result: "你没有抢先替两个人回答。那晚你们第一次认真讨论谁可以知道、什么不能成为队内谈资。", effects: { peerFavor: 0.9, mindset: 0.4 } },
+      { tone: "light", title: "反问全队谁和谁又完全一样", result: "话题被带开，没人得到证据。对方后来告诉你，这次解围让TA松了一口气。", effects: { san: 0.8, peerFavor: 0.6 } },
+      { tone: "hurt", title: "立刻否认，并说怎么可能喜欢TA", result: "秘密暂时安全了，那句嫌弃却不能在只有两个人时自动撤回。", effects: { peerFavor: -1.8, san: -0.8 } },
+    ],
+  },
+  {
+    key: "after-coach-conflict",
+    stage: "dating",
+    title: (name) => `${name}刚和教练吵完，转身把火气带到了你这里。`,
+    body: () => [
+      "你只问了一句要不要一起复盘，对方却说你和教练一样只关心结果。话出口后，TA自己也愣住了。",
+      "理解压力来源不等于接受伤害。恋人既可以体谅，也需要保住不被迁怒的边界。",
+    ],
+    choices: () => [
+      { tone: "boundary", title: "先暂停谈话，说明这种语气不能继续", result: "对方起初沉默，冷静后回来道歉。你们第一次证明暂停不是抛弃，而是阻止伤害扩大。", effects: { peerFavor: 0.9, mindset: 0.5, san: -0.3 } },
+      { tone: "honest", title: "承认理解TA难受，但自己也被这句话伤到", result: "两种痛苦没有争夺优先级。对方讲清了和教练的冲突，也承担了对你的伤害。", effects: { peerFavor: 1.1, san: -0.4 } },
+      { tone: "hurt", title: "用更重的话顶回去", result: "争吵迅速离开原来的问题，变成谁更懂得击中对方软处。", effects: { peerFavor: -1.8, san: -1.2 } },
+    ],
+  },
+  {
+    key: "public-nickname",
+    stage: "dating",
+    title: (name) => `${name}差点在全队面前叫出只有你们私下使用的称呼。`,
+    body: () => [
+      "那个音节停在一半，被匆忙改成你的全名。旁边有人抬头，又很快低下去。",
+      "一段关系开始拥有自己的语言，也开始承担这些语言意外泄露的风险。",
+    ],
+    choices: () => [
+      { tone: "light", title: "课后拿这次险情笑TA半天", result: "对方恼羞成怒地要求删除这个称呼，五分钟后又自己用了一次。", effects: { san: 1, peerFavor: 0.8 } },
+      { tone: "boundary", title: "重新约定公开场合绝不使用私下称呼", result: "边界让秘密少了刺激，却多了安全。你们不必靠冒险证明关系真实。", effects: { mindset: 0.4, peerFavor: 0.7 } },
+      { tone: "hurt", title: "故意在人多时也叫TA的昵称", result: "你把对方的失误变成了共同风险，却没有先确认TA是否愿意。", effects: { peerFavor: -1.2, coachFavor: -0.3 } },
+    ],
+  },
+  {
+    key: "family-emergency",
+    stage: "dating",
+    title: (name) => `${name}临时回家处理一场家庭变故。`,
+    body: () => [
+      "对方只说这几天可能消失，没有解释细节。你担心，却也知道亲密并不意味着自动获得另一个家庭的全部真相。",
+      "真正困难的是在信息不足时提供支持，而不把自己的焦虑变成追问。",
+    ],
+    minWeek: 40,
+    choices: () => [
+      { tone: "care", title: "告诉TA需要帮忙时可以直接说具体事情", result: "两天后，对方只请你代交一份材料。这个很小的请求证明TA相信你会帮助，也不会借此越界。", effects: { peerFavor: 1.1, san: -0.2 } },
+      { tone: "boundary", title: "确认安全后不再追问，等待TA主动联系", result: "等待并不轻松，却没有把对方逼成必须同时照顾你的那个人。", effects: { mindset: 0.5, peerFavor: 0.8 } },
+      { tone: "hurt", title: "质问恋人为什么不能把实情都告诉自己", result: "对方最终解释了一部分，只是那些话不再像分享，更像被迫提交的证明。", effects: { peerFavor: -1.5, san: -0.8 } },
+    ],
+  },
+  {
+    key: "snack-inventory",
+    stage: "dating",
+    title: (name) => `${name}在抽屉里存了一整排你常吃的零食。`,
+    body: () => [
+      "种类、口味甚至过敏信息都没有错。被记住让你高兴，也让你担心这份照顾正在变成单方面持续补货。",
+      "浪漫不该依赖某个人无声承担全部准备工作。",
+    ],
+    choices: () => [
+      { tone: "care", title: "补上TA喜欢的东西，并共同管理这只抽屉", result: "抽屉从礼物变成共享补给站。谁都可以拿，也都记得在空之前补回去。", effects: { pocketMoney: -14, peerFavor: 1, san: 0.8 } },
+      { tone: "honest", title: "认真道谢，也问TA是否因此花了太多钱", result: "关心没有被拒绝，只是第一次连同成本一起被看见。对方承认最近确实买得有些过量。", effects: { peerFavor: 0.9, mindset: 0.3 } },
+      { tone: "hurt", title: "默认这些东西以后都会一直存在", result: "抽屉仍然很满，照顾却开始像一种没人明确同意的职责。", effects: { peerFavor: -0.7, san: 0.5 } },
+    ],
+  },
+  {
+    key: "college-map",
+    stage: "dating",
+    title: (name) => `${name}在地图上标出了你们可能去的大学。`,
+    body: () => [
+      "有些点在同一座城市，有些相隔一整夜的火车。每个标记旁边都写着分数、专业和一条没有写完的路线。",
+      "把未来画出来既像承诺，也像压力。两个人需要决定，彼此应该是选择的一部分，还是选择的唯一理由。",
+    ],
+    minWeek: 52,
+    choices: () => [
+      { tone: "honest", title: "分别圈出即使没有对方也真正想去的学校", result: "重合点变少，却变得更真实。你们第一次谈论怎样相爱而不替彼此放弃人生。", effects: { peerFavor: 1.1, mindset: 0.6 } },
+      { tone: "practical", title: "比较交通、专业与录取路线，保留多个方案", result: "浪漫被拆进时间表和车次，却没有因此消失。可执行的未来比一句永远在一起更可靠。", effects: { reasoning: 0.15, peerFavor: 0.8 } },
+      { tone: "hurt", title: "要求TA优先选择和自己同城", result: "愿望被说成义务以后，地图上的每一条远路线都像一种背叛。", effects: { peerFavor: -1.5, mindset: -0.6 } },
+    ],
+  },
+  {
+    key: "sleep-pact",
+    stage: "dating",
+    title: (name) => `你和${name}约定十一点以后不再聊题，第一周就有人违约。`,
+    body: () => [
+      "凌晨一点，那道截图里的题确实很难，也确实可以等到明天。真正推动消息发出的，是焦虑和想立刻得到另一个人的回应。",
+      "共同作息只有在双方都能说“不”时才是照顾，否则只是把失眠变成双人任务。",
+    ],
+    choices: () => [
+      { tone: "boundary", title: "第二天再回，并重申夜间只处理真正紧急的事", result: "对方一开始有些失落，随后承认那道题并不紧急。边界经受住了第一次测试。", effects: { mindset: 0.5, peerFavor: 0.7, san: 0.6 } },
+      { tone: "care", title: "只回一句先睡，明早一起看", result: "你没有用长聊证明在意。第二天早晨，那道题在清醒状态下只用了十分钟。", effects: { san: 0.8, peerFavor: 0.8 } },
+      { tone: "hurt", title: "陪TA聊完，再抱怨自己因此没睡好", result: "你跨过边界以后把责任交给对方。关心和责备缠在一起，谁都无法安心。", effects: { san: -1, peerFavor: -1 } },
+    ],
+  },
+  {
+    key: "group-assignment",
+    stage: "dating",
+    title: (name) => `分组任务时，老师故意没有把你和${name}分在一起。`,
+    body: () => [
+      "理由是“不要总黏在一起”。教室里有人笑，你们则被迫在公开注视下决定该生气、顺从，还是证明彼此并非离开对方就无法工作。",
+      "独立不是关系失败，外界用羞辱方式要求独立却依然会造成伤害。",
+    ],
+    choices: () => [
+      { tone: "practical", title: "各自完成任务，结束后再交换复盘", result: "你们在不同组都做得很好。重聚时，关系没有因独立而变薄，反而多了可以互相带回来的东西。", effects: { reasoning: 0.15, peerFavor: 0.8 } },
+      { tone: "honest", title: "课后告诉老师这种公开调侃让人不适", result: "安排没有改变，但你把边界说了出来。对方也知道自己不需要独自吞下那阵笑声。", effects: { coachFavor: -0.4, peerFavor: 1, mindset: 0.4 } },
+      { tone: "hurt", title: "整节课故意隔组传纸条抗议", result: "你们获得了短暂同盟感，也让老师关于注意力的判断得到了最坏的证据。", effects: { coachFavor: -1.2, peerFavor: -0.5, san: 0.3 } },
+    ],
+  },
+
   // 挚友：不以恋爱为残缺版本，拥有独立的照看、冲突与共同记忆。
   {
     key: "night-food",
@@ -811,7 +1118,7 @@ export function nextRelationshipDailyEvent(ctx: RelationshipDailyContext): GameE
             ? "挚友日常"
             : "人物共通线 · 日常",
     title: picked.title(name),
-    body: [...picked.body(name), personalityAside(candidate)],
+    body: [...picked.body(name), personalityAside(candidate, picked.key)],
     concealConsequences: true,
     visualNovel: true,
     trigger: { earliestWeek: ctx.week, latestWeek: ctx.week },
@@ -819,7 +1126,7 @@ export function nextRelationshipDailyEvent(ctx: RelationshipDailyContext): GameE
       id: `rel-daily-${option.tone}-${candidate.personalityKey}-${innerConflict}-${candidate.rival.id}-${picked.key}`,
       title: option.title,
       preview: "这次回应不会立刻告诉你关系将走向哪里。",
-      result: `${option.result}${personalityReaction(candidate, option.tone)}${conflictReaction(innerConflict, option.tone)}`,
+      result: `${option.result}${personalityReaction(candidate, option.tone, picked.key)}${conflictReaction(innerConflict, option.tone, `${candidate.rival.id}-${picked.key}`)}`,
       effects: {
         ...option.effects,
         tags: [

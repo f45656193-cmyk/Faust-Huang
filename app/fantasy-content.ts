@@ -30,6 +30,7 @@ type Chapter = {
   body: string[];
   choices: GameEvent["choices"];
   minWeek?: number;
+  maxWeek?: number;
   maxSan?: number;
   requires?: string;
 };
@@ -149,6 +150,7 @@ const chapters: Chapter[] = [
       choice("fantasy-eve-confess", "承认自己真的很害怕", "没有人说“别怕”。他们只告诉你自己也一样，然后一个个道晚安。", { san: 1, mindset: 0.8, tags: ["幻想乡:共同害怕"] }),
     ],
     minWeek: 34,
+    maxWeek: 47,
   },
   {
     key: "result-night",
@@ -177,6 +179,7 @@ const chapters: Chapter[] = [
       choice("fantasy-world-quiet", "只和几个熟悉的人散步", "你没有认识所有人，却第一次把几个头像变成了以后仍会联系的朋友。", { san: 1.5, peerFavor: 0.8, tags: ["achievement:world-visit"] }),
     ],
     minWeek: 46,
+    maxWeek: 65,
     requires: "幻想乡:加入",
   },
   {
@@ -293,9 +296,22 @@ export function nextFantasyStoryEvent(ctx: FantasyStoryContext): GameEvent | nul
   const eligible = chapters.filter((chapter) => {
     if (ctx.resolvedEvents.includes(`fantasy-${chapter.key}`)) return false;
     if ((chapter.minWeek ?? 0) > ctx.week) return false;
+    if ((chapter.maxWeek ?? Number.POSITIVE_INFINITY) < ctx.week) return false;
     if (chapter.maxSan !== undefined && ctx.san > chapter.maxSan) return false;
     if (chapter.requires && !ctx.storyTags.includes(chapter.requires)) return false;
     if (chapter.key === "world-visit" && !ctx.hasNationalAttempt) return false;
+    // 入群后的普通群聊也只能在本周实际摸鱼后撞见。联赛正式出分夜
+    // 是唯一例外，但必须等官方名单确认，不能仅凭周数提前出现。
+    if (chapter.key === "result-night") {
+      if (
+        !ctx.storyTags.some((tag) =>
+          /^第[12]次省赛-最终名单确认$/.test(tag),
+        )
+      )
+        return false;
+    } else if (!ctx.slackedThisWeek) {
+      return false;
+    }
     return true;
   });
   const chapter = eligible[0];

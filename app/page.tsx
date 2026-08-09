@@ -19,6 +19,7 @@ import { linkedWeeklyEvents } from "./event-library";
 import {
   communityAchievementConditions,
   communityAchievementDefinitions,
+  communityAchievementUnlockMethods,
 } from "./community-achievements";
 import {
   applyRelationshipChoice,
@@ -26,6 +27,7 @@ import {
   nextRelationshipStoryEvent,
   normalizeRelationship,
   relationshipLearningBoost,
+  relationshipWeeklyMoodEffect,
   relationshipRouteLabel,
   settleRelationshipWeek,
   type DeepRelationship,
@@ -210,6 +212,13 @@ const schoolNames = [
 
 const supportLabels = ["谨慎观望", "心存疑虑", "暂时支持", "比较支持", "全力支持"];
 
+const familyProfiles = [
+  { key: "anxious", label: "焦虑波动型", volatility: 1.35, moneyFactor: 1.15, romance: "反对", note: "很在意每次排名，态度容易随短期成绩摆动。" },
+  { key: "results", label: "结果导向型", volatility: 1.1, moneyFactor: 1, romance: "谨慎", note: "愿意投入，但习惯用看得见的成绩确认这条路是否值得。" },
+  { key: "longterm", label: "长期规划型", volatility: 0.65, moneyFactor: 0.8, romance: "可沟通", note: "更在意长期路线、身体状态和退出方案，不会因一场考试立刻翻脸。" },
+  { key: "open", label: "包容沟通型", volatility: 0.5, moneyFactor: 0.7, romance: "较包容", note: "未必懂竞赛，但愿意先听完你的理由，再讨论边界。" },
+] as const;
+
 function hashSeed(value: string) {
   let hash = 2166136261;
   for (let i = 0; i < value.length; i += 1) {
@@ -226,6 +235,15 @@ function makeSeed() {
 
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
+}
+
+const PROVINCIAL_QUESTION_COUNT = 80;
+const PROVINCIAL_POINTS_PER_QUESTION = 2;
+const PROVINCIAL_MAX_SCORE =
+  PROVINCIAL_QUESTION_COUNT * PROVINCIAL_POINTS_PER_QUESTION;
+
+function provincialScoreRate(score: number) {
+  return round1((score / PROVINCIAL_MAX_SCORE) * 100);
 }
 
 function statLabel(value: number) {
@@ -301,6 +319,46 @@ function rankAgainst(scores: number[], score: number) {
   return 1 + scores.filter((competitorScore) => competitorScore > score).length;
 }
 
+type NamedExamRivalContext = {
+  rival: Rival;
+  name: string;
+  retiredWeek?: number;
+  knownAtExam: boolean;
+};
+
+type NamedProvincialResult = {
+  rivalId: string;
+  name: string;
+  school: string;
+  scope: Rival["scope"];
+  score: number;
+  rank: number;
+  knownAtExam: boolean;
+};
+
+type NamedNationalResult = {
+  rivalId: string;
+  name: string;
+  school: string;
+  theoryRaw: number;
+  theoryRank: number;
+  qualifiedForExperiment: boolean;
+  experimentRaw?: number;
+  finalRank: number;
+  medal: NationalMedal;
+  knownAtExam: boolean;
+};
+
+function gradeEligibleForProvincial(
+  rival: Rival,
+  attemptNumber: 1 | 2,
+) {
+  if (rival.scope === "national") return false;
+  return attemptNumber === 1
+    ? rival.gradeRelation !== "下届"
+    : rival.gradeRelation !== "上届";
+}
+
 function simulateProvincialExam(
   stats: PlayerStats,
   seed: string,
@@ -314,6 +372,8 @@ function simulateProvincialExam(
     thirdPrizeEnd: number;
     competitionStrength: number;
   },
+  luck = 0,
+  namedRivals: NamedExamRivalContext[] = [],
 ): ProvincialAttempt {
   const literatureCount = 22 + (hashSeed(`${seed}-literature-${week}`) % 7);
   const moduleNames = ["第一模块", "第二模块", "第三模块", "第四模块"] as const;
@@ -345,6 +405,7 @@ function simulateProvincialExam(
     mindset: number,
     neglectWeeks: number,
     candidateKey: string,
+    candidateLuck = 0,
   ) => {
     const form =
       (seededUnit(`${candidateKey}-form-a`) +
@@ -376,7 +437,7 @@ function simulateProvincialExam(
           (question.strangeQuestion ? 0.11 : 0) +
           form) *
           conditionFactor * pacingFactor /
-          question.difficulty,
+          question.difficulty + candidateLuck * 0.006,
         0.055,
         0.91,
       );
@@ -398,7 +459,9 @@ function simulateProvincialExam(
     stats.mindset,
     stats.competitionNeglectWeeks,
     playerFormKey,
+    luck,
   );
+  const rawScore = correctTotal * PROVINCIAL_POINTS_PER_QUESTION;
   questions.forEach((question) => {
     const ability = playerModules[question.moduleIndex];
     const form =
@@ -423,7 +486,7 @@ function simulateProvincialExam(
             Math.max(0, (question.index + 1) / questions.length - 0.62) *
               Math.max(0, requiredSpeed - stats.problemSpeed) /
               95
-          : 0.12),
+          : 0.12) + luck * 0.006,
       0.055,
       0.91,
     );
@@ -438,8 +501,18 @@ function simulateProvincialExam(
     }
   });
 
-  const competitorScores = Array.from(
-    { length: world.provinceParticipants - 1 },
+  const eligibleNamedRivals = namedRivals.filter(
+    ({ rival, retiredWeek }) =>
+      gradeEligibleForProvincial(rival, attemptNumber) &&
+      (retiredWeek === undefined || retiredWeek > week),
+  );
+  const anonymousCompetitorScores = Array.from(
+    {
+      length: Math.max(
+        0,
+        world.provinceParticipants - 1 - eligibleNamedRivals.length,
+      ),
+    },
     (_, index) => {
       const eliteBonus =
         seededUnit(`${seed}-province-elite-${week}-${index}`) < 0.045
@@ -478,7 +551,7 @@ function simulateProvincialExam(
           (seededUnit(`${seed}-province-speed-${week}-${index}`) - 0.5) * 22,
       );
       return round1(
-        (examScore(
+        examScore(
           modules,
           reasoning,
           problemSpeed,
@@ -488,38 +561,105 @@ function simulateProvincialExam(
             ? 2
             : 0,
           `${seed}-province-candidate-${week}-${index}`,
-        ) /
-          80) *
-          100,
+          0,
+        ) * PROVINCIAL_POINTS_PER_QUESTION,
       );
     },
   );
-
-  const rawScore = round1((correctTotal / 80) * 100);
+  const namedScoreEntries = eligibleNamedRivals.map((context, index) => {
+    const { rival } = context;
+    const level = rivalSnapshot(rival, seed, week, context.retiredWeek).level;
+    const modules = moduleKeys.map((module, moduleIndex) =>
+      clamp(
+        level +
+          (module === rival.specialty ? 8 : -1.5) +
+          (seededUnit(
+            `${seed}-named-province-module-${week}-${rival.id}-${moduleIndex}`,
+          ) -
+            0.5) *
+            12,
+        12,
+        96,
+      ),
+    );
+    const reasoning = clamp(
+      level * 0.86 +
+        7 +
+        (seededUnit(`${seed}-named-province-reason-${week}-${rival.id}`) -
+          0.5) *
+          12,
+    );
+    const speed = clamp(
+      level * 0.8 +
+        8 +
+        (seededUnit(`${seed}-named-province-speed-${week}-${rival.id}`) -
+          0.5) *
+          14,
+    );
+    return {
+      context,
+      score:
+        examScore(
+          modules,
+          reasoning,
+          speed,
+          62 + seededUnit(`${seed}-named-province-san-${rival.id}`) * 30,
+          56 + seededUnit(`${seed}-named-province-mind-${rival.id}`) * 36,
+          0,
+          `${seed}-named-province-${week}-${rival.id}-${index}`,
+          0,
+        ) * PROVINCIAL_POINTS_PER_QUESTION,
+    };
+  });
+  const namedScores = namedScoreEntries.map((entry) => entry.score);
+  const competitorScores = [...anonymousCompetitorScores, ...namedScores];
+  const namedResults: NamedProvincialResult[] = namedScoreEntries.map(
+    ({ context, score }) => ({
+      rivalId: context.rival.id,
+      name: context.name,
+      school: context.rival.school,
+      scope: context.rival.scope,
+      score,
+      rank:
+        1 +
+        competitorScores.filter((competitorScore) => competitorScore > score)
+          .length +
+        (rawScore > score ? 1 : 0),
+      knownAtExam: context.knownAtExam,
+    }),
+  );
   const estimateError =
     (seededUnit(`${seed}-estimate-center-${week}`) - 0.5) *
-    Math.max(2.5, 8 - stats.reasoning * 0.04);
+    Math.max(4, 12.8 - stats.reasoning * 0.064);
   const estimateWidth = Math.max(
-    2.5,
-    7 - stats.reasoning * 0.035 - stats.mindset * 0.012,
+    4,
+    11.2 - stats.reasoning * 0.056 - stats.mindset * 0.0192,
   );
-  const estimateCenter = clamp(rawScore + estimateError);
-  const estimateLow = round1(clamp(estimateCenter - estimateWidth / 2));
-  const estimateHigh = round1(clamp(estimateCenter + estimateWidth / 2));
+  const estimateCenter = clamp(rawScore + estimateError, 0, PROVINCIAL_MAX_SCORE);
+  const estimateLow = round1(
+    clamp(estimateCenter - estimateWidth / 2, 0, PROVINCIAL_MAX_SCORE),
+  );
+  const estimateHigh = round1(
+    clamp(estimateCenter + estimateWidth / 2, 0, PROVINCIAL_MAX_SCORE),
+  );
   const draftDelta = round1(
-    (seededUnit(`${seed}-draft-adjustment-${week}`) - 0.42) * 4.5,
+    (seededUnit(`${seed}-draft-adjustment-${week}`) - 0.42) * 7.2,
   );
-  const draftScore = round1(clamp(rawScore + draftDelta));
+  const draftScore = round1(
+    clamp(rawScore + draftDelta, 0, PROVINCIAL_MAX_SCORE),
+  );
   const appealDelta =
     seededUnit(`${seed}-appeal-opportunity-${week}`) < 0.48
-      ? round1(0.6 + seededUnit(`${seed}-appeal-delta-${week}`) * 1.4)
+      ? round1(1 + seededUnit(`${seed}-appeal-delta-${week}`) * 3)
       : 0;
   const rankFor = (score: number) => rankAgainst(competitorScores, score);
   const breakdown = Object.values(counts).map((section) => ({
     name: section.name,
     correct: section.correct,
     total: section.total,
-    score: round1((section.correct / Math.max(1, section.total)) * 100),
+    score: section.correct * PROVINCIAL_POINTS_PER_QUESTION,
+    maxScore: section.total * PROVINCIAL_POINTS_PER_QUESTION,
+    rate: round1((section.correct / Math.max(1, section.total)) * 100),
   }));
   return {
     attemptNumber,
@@ -532,6 +672,7 @@ function simulateProvincialExam(
     draftScore,
     draftRank: rankFor(draftScore),
     appealDelta,
+    maxScore: PROVINCIAL_MAX_SCORE,
     participants: world.provinceParticipants,
     firstPrizeEnd: world.firstPrizeEnd,
     secondPrizeEnd: world.secondPrizeEnd,
@@ -539,6 +680,7 @@ function simulateProvincialExam(
     teamPlaces: world.teamPlaces,
     competitionStrength: world.competitionStrength,
     competitorScores,
+    namedResults,
     breakdown,
   };
 }
@@ -548,6 +690,43 @@ function provincialAward(rank: number, attempt: ProvincialAttempt) {
   if (rank <= attempt.secondPrizeEnd) return "省二等奖";
   if (rank <= attempt.thirdPrizeEnd) return "省三等奖";
   return "未获奖";
+}
+
+function rankedNamedProvincialResults(
+  attempt: ProvincialAttempt,
+  playerScore = attempt.finalScore ?? attempt.draftScore ?? attempt.rawScore,
+) {
+  return (attempt.namedResults ?? [])
+    .map((result) => ({
+      ...result,
+      rank:
+        1 +
+        attempt.competitorScores.filter((score) => score > result.score).length +
+        (playerScore > result.score ? 1 : 0),
+    }))
+    .sort((a, b) => a.rank - b.rank);
+}
+
+function familiarProvincialLine(
+  attempt: ProvincialAttempt,
+  playerScore: number,
+  knownOnly = false,
+) {
+  const playerRank = rankAgainst(attempt.competitorScores, playerScore);
+  const nearby = rankedNamedProvincialResults(attempt, playerScore)
+    .filter((result) => !knownOnly || result.knownAtExam)
+    .sort(
+      (a, b) =>
+        Math.abs(a.rank - playerRank) - Math.abs(b.rank - playerRank),
+    )
+    .slice(0, 3);
+  if (!nearby.length) return null;
+  return `熟悉的名字也出现在榜单附近：${nearby
+    .map(
+      (result) =>
+        `${result.name} ${formatNumber(result.score)}/${PROVINCIAL_MAX_SCORE}，全省第${result.rank}`,
+    )
+    .join("；")}。`;
 }
 
 function meanAndSd(values: number[]) {
@@ -563,6 +742,9 @@ function simulateNationalExam(
   seed: string,
   week: number,
   attemptNumber: 1 | 2,
+  luck = 0,
+  namedRivals: NamedExamRivalContext[] = [],
+  provincialAttempt?: ProvincialAttempt,
 ): NationalAttempt {
   // 国赛每届约 600 人；人数会小幅波动，但奖牌名额按核实后的固定口径划分。
   const participants = nationalParticipantCount(
@@ -588,18 +770,28 @@ function simulateNationalExam(
   const literaturePerformance = clamp(
     (23 + stats.reasoning * 0.5 + moduleAverage * 0.18) * condition * pacingFactor +
       theoryForm +
-      (seededUnit(`${seed}-national-lit-${week}`) - 0.5) * 10,
+      (seededUnit(`${seed}-national-lit-${week}`) - 0.5) * 10 + luck * 0.45,
   );
   const foundationPerformance = clamp(
     (12 + moduleAverage * 0.65 + stats.reasoning * 0.06) * condition +
       theoryForm * 0.65 +
-      (seededUnit(`${seed}-national-foundation-${week}`) - 0.5) * 9,
+      (seededUnit(`${seed}-national-foundation-${week}`) - 0.5) * 9 + luck * 0.35,
   );
   const theoryRaw = round1(
     literaturePerformance * 0.9 + foundationPerformance * 0.1,
   );
-  const competitorProfiles = Array.from(
-    { length: participants - 1 },
+  const provincialQualifiers = new Set(
+    (provincialAttempt?.namedResults ?? [])
+      .filter((result) => result.rank <= (provincialAttempt?.teamPlaces ?? 0))
+      .map((result) => result.rivalId),
+  );
+  const eligibleNamedRivals = namedRivals.filter(
+    ({ rival, retiredWeek }) =>
+      (retiredWeek === undefined || retiredWeek > week) &&
+      (rival.scope === "national" || provincialQualifiers.has(rival.id)),
+  );
+  const anonymousProfiles = Array.from(
+    { length: Math.max(0, participants - 1 - eligibleNamedRivals.length) },
     (_, index) => {
       const powerhouse =
         seededUnit(`${seed}-national-powerhouse-${week}-${index}`) < 0.22
@@ -655,9 +847,71 @@ function simulateNationalExam(
         reasoning,
         experiment,
         theoryRaw: round1(literature * 0.9 + foundation * 0.1),
+        namedContext: null as NamedExamRivalContext | null,
       };
     },
   );
+  const namedProfiles = eligibleNamedRivals.map((context, namedIndex) => {
+    const { rival } = context;
+    const level = rivalSnapshot(rival, seed, week, context.retiredWeek).level;
+    const knowledge = clamp(
+      level +
+        4 +
+        (seededUnit(`${seed}-named-national-knowledge-${week}-${rival.id}`) -
+          0.5) *
+          10,
+      35,
+      97,
+    );
+    const reasoning = clamp(
+      level * 0.9 +
+        8 +
+        (seededUnit(`${seed}-named-national-reason-${week}-${rival.id}`) -
+          0.5) *
+          12,
+    );
+    const speed = clamp(
+      level * 0.84 +
+        9 +
+        (seededUnit(`${seed}-named-national-speed-${week}-${rival.id}`) -
+          0.5) *
+          12,
+    );
+    const experiment = clamp(
+      level * 0.8 +
+        (rival.scope === "national" ? 10 : 5) +
+        (seededUnit(`${seed}-named-national-experiment-${week}-${rival.id}`) -
+          0.5) *
+          16,
+    );
+    const form =
+      (seededUnit(`${seed}-named-national-form-a-${week}-${rival.id}`) +
+        seededUnit(`${seed}-named-national-form-b-${week}-${rival.id}`) -
+        1) *
+      11;
+    const literature = clamp(
+      (23 + reasoning * 0.5 + knowledge * 0.18) *
+        clamp(
+          0.73 + speed * 0.0037 - (theoryQuestionLoad - 88) * 0.0025,
+          0.7,
+          1.02,
+        ) +
+        form,
+    );
+    const foundation = clamp(
+      12 + knowledge * 0.65 + reasoning * 0.06 + form * 0.65,
+    );
+    return {
+      index: anonymousProfiles.length + namedIndex,
+      latent: level,
+      knowledge,
+      reasoning,
+      experiment,
+      theoryRaw: round1(literature * 0.9 + foundation * 0.1),
+      namedContext: context,
+    };
+  });
+  const competitorProfiles = [...anonymousProfiles, ...namedProfiles];
   const competitorTheory = competitorProfiles.map((profile) => profile.theoryRaw);
   const theoryDistribution = meanAndSd([...competitorTheory, theoryRaw]);
   const theoryT = round1(
@@ -686,7 +940,7 @@ function simulateNationalExam(
             (practical * 0.78 + stats.experiment * 0.22) * 0.52 +
             knowledge * 0.22 +
             stats.mindset * 0.04 +
-            (seededUnit(`${seed}-national-exp-${week}-${index}`) - 0.5) * 22,
+            (seededUnit(`${seed}-national-exp-${week}-${index}`) - 0.5) * 22 + luck * 0.25,
         ),
       ),
     }),
@@ -743,6 +997,44 @@ function simulateNationalExam(
   const experimentRank = qualifiedForExperiment
     ? 1 + competitorExperiment.filter((score) => score > experimentRaw).length
     : undefined;
+  const namedResults: NamedNationalResult[] = competitorProfiles.flatMap(
+    (profile) => {
+      const context = profile.namedContext;
+      if (!context) return [];
+      const rivalTheoryRank =
+        1 +
+        competitorTheory.filter((score) => score > profile.theoryRaw).length +
+        (theoryRaw > profile.theoryRaw ? 1 : 0);
+      const rivalQualified = rivalTheoryRank <= NATIONAL_EXPERIMENT_CUTOFF;
+      const qualifiedIndex = qualifiedProfiles.findIndex(
+        (candidate) => candidate.index === profile.index,
+      );
+      let rivalFinalRank = rivalTheoryRank;
+      let rivalExperimentRaw: number | undefined;
+      if (rivalQualified && qualifiedIndex >= 0) {
+        rivalExperimentRaw = round1(competitorExperiment[qualifiedIndex]);
+        const rivalFinalScore = competitorFinal[qualifiedIndex];
+        rivalFinalRank =
+          1 +
+          competitorFinal.filter((score) => score > rivalFinalScore).length +
+          (qualifiedForExperiment && finalScore > rivalFinalScore ? 1 : 0);
+      }
+      return [
+        {
+          rivalId: context.rival.id,
+          name: context.name,
+          school: context.rival.school,
+          theoryRaw: profile.theoryRaw,
+          theoryRank: rivalTheoryRank,
+          qualifiedForExperiment: rivalQualified,
+          experimentRaw: rivalExperimentRaw,
+          finalRank: rivalFinalRank,
+          medal: nationalMedalForRank(rivalFinalRank),
+          knownAtExam: context.knownAtExam,
+        },
+      ];
+    },
+  );
   const medal = nationalMedalForRank(finalRank);
   return {
     attemptNumber,
@@ -759,6 +1051,7 @@ function simulateNationalExam(
     medal,
     experimentRank,
     sanAtExam: stats.san,
+    namedResults,
   };
 }
 
@@ -825,7 +1118,8 @@ function generateAssessmentRecap(
       subjects: provincialAttempt.breakdown.map((section) => ({
         name: section.name,
         score: section.score,
-        note: `回忆正确 ${section.correct}/${section.total}`,
+        maxScore: section.maxScore,
+        note: `回忆正确 ${section.correct}/${section.total} · 得分率 ${formatNumber(section.rate)}%`,
       })),
       rank: Math.round(
         (provincialAttempt.estimateRankLow +
@@ -916,11 +1210,31 @@ function generateAssessmentRecap(
     else if (subject === "第二模块") ability = stats.module2;
     else if (subject === "第三模块") ability = stats.module3;
     else if (subject === "第四模块") ability = stats.module4;
+    if (subject.includes("实验")) {
+      const practical = subject.includes("生物化学")
+        ? stats.experimentModules.module1
+        : subject.includes("植物")
+          ? stats.experimentModules.module2
+          : subject.includes("动物")
+            ? stats.experimentModules.module3
+            : stats.experimentModules.module4;
+      ability = practical * 0.7 + stats.experiment * 0.3;
+    }
     const noise =
       (seededUnit(`${seed}-${assessment.id}-${subject}-${index}`) * 2 - 1) *
       (stats.san < 45 ? 20 : 14);
     const score = round1(
-      clamp(22 + ability * 0.68 + stats.reasoning * 0.12 + noise, 0, 100),
+      clamp(
+        22 +
+          ability * 0.68 +
+          stats.reasoning * 0.12 +
+          (subject.includes("实验")
+            ? 0
+            : clamp((stats.problemSpeed - 50) * 0.12, -5, 6)) +
+          noise,
+        0,
+        100,
+      ),
     );
     return {
       name: subject,
@@ -938,8 +1252,12 @@ function generateAssessmentRecap(
   const average =
     subjectScores.reduce((total, subject) => total + subject.score, 0) /
     subjectScores.length;
-  const participants = assessment.title.includes("联赛")
-    ? 1200
+  const isProvincialMock = /省赛冲刺机构模考|历年联赛真题测试/.test(
+    assessment.title,
+  );
+  const isInstitutionAssessment = /机构|南辰|圆阶|外培/.test(assessment.title);
+  const participants = isInstitutionAssessment
+    ? 80 + (hashSeed(`${seed}-${assessment.id}-institution-size`) % 141)
     : Math.max(2, activeSchoolTeamSize);
   const rank = Math.max(
     1,
@@ -956,6 +1274,14 @@ function generateAssessmentRecap(
     rank,
     participants,
     lowRegularPenalty: false,
+    ...(isProvincialMock
+      ? {
+          totalScore:
+            Math.round((average / 100) * PROVINCIAL_QUESTION_COUNT) *
+            PROVINCIAL_POINTS_PER_QUESTION,
+          maxScore: PROVINCIAL_MAX_SCORE,
+        }
+      : {}),
   };
 }
 
@@ -1039,6 +1365,7 @@ type AssessmentRecap = {
 type ProvincialAttempt = {
   attemptNumber: 1 | 2;
   examWeek: number;
+  maxScore: number;
   rawScore: number;
   estimateLow: number;
   estimateHigh: number;
@@ -1054,12 +1381,56 @@ type ProvincialAttempt = {
   teamPlaces: number;
   competitionStrength: number;
   competitorScores: number[];
-  breakdown: Array<{ name: string; score: number; correct: number; total: number }>;
+  namedResults: NamedProvincialResult[];
+  breakdown: Array<{
+    name: string;
+    score: number;
+    maxScore: number;
+    rate: number;
+    correct: number;
+    total: number;
+  }>;
   finalScore?: number;
   finalRank?: number;
   enteredTeam?: boolean;
   finalAward?: string;
 };
+
+function normalizeProvincialAttemptScoreScale(
+  attempt: ProvincialAttempt,
+): ProvincialAttempt {
+  if (attempt.maxScore === PROVINCIAL_MAX_SCORE) {
+    return { ...attempt, namedResults: attempt.namedResults ?? [] };
+  }
+  const scale = PROVINCIAL_MAX_SCORE / 100;
+  const convert = (value: number | undefined) =>
+    typeof value === "number" ? round1(value * scale) : value;
+  return {
+    ...attempt,
+    maxScore: PROVINCIAL_MAX_SCORE,
+    rawScore: convert(attempt.rawScore) ?? 0,
+    estimateLow: convert(attempt.estimateLow) ?? 0,
+    estimateHigh: convert(attempt.estimateHigh) ?? 0,
+    draftScore: convert(attempt.draftScore) ?? 0,
+    appealDelta: convert(attempt.appealDelta) ?? 0,
+    finalScore: convert(attempt.finalScore),
+    competitorScores: attempt.competitorScores.map(
+      (score) => convert(score) ?? 0,
+    ),
+    namedResults: (attempt.namedResults ?? []).map((result) => ({
+      ...result,
+      score: convert(result.score) ?? 0,
+    })),
+    breakdown: attempt.breakdown.map((section) => ({
+      ...section,
+      score: section.correct * PROVINCIAL_POINTS_PER_QUESTION,
+      maxScore: section.total * PROVINCIAL_POINTS_PER_QUESTION,
+      rate:
+        section.rate ??
+        round1((section.correct / Math.max(1, section.total)) * 100),
+    })),
+  };
+}
 
 type NationalAttempt = {
   attemptNumber: 1 | 2;
@@ -1076,6 +1447,7 @@ type NationalAttempt = {
   medal: NationalMedal;
   experimentRank?: number;
   sanAtExam?: number;
+  namedResults: NamedNationalResult[];
 };
 
 type DisplayEffectKey =
@@ -1170,9 +1542,12 @@ function formatNumber(value: number) {
 function itemSpriteStyle(atlasIndex: number): CSSProperties {
   const column = atlasIndex % 8;
   const row = Math.floor(atlasIndex / 8);
+  const zoomedPosition = (cell: number) =>
+    (((cell + 0.5) * 1.05 - 0.5) / 7.4) * 100;
   return {
     backgroundImage: `url(${keepsakeAtlasDataUrl})`,
-    backgroundPosition: `${(column / 7) * 100}% ${(row / 7) * 100}%`,
+    backgroundPosition: `${zoomedPosition(column)}% ${zoomedPosition(row)}%`,
+    backgroundSize: "840% 840%",
   };
 }
 
@@ -1227,6 +1602,7 @@ type EventResultNotice = {
   result: string;
   nextAction?:
     | { type: "national-finish" }
+    | { type: "continue-event"; event: GameEvent }
     | { type: "retirement-finish"; stage: RetirementStage };
 };
 
@@ -1255,12 +1631,26 @@ type SaveSlotInfo = {
   screen: string;
 };
 
+type EndingArchiveRecord = {
+  id: string;
+  seed: string;
+  name: string;
+  endingTitle: string;
+  futureTitle?: string;
+  admission?: string;
+  route?: string;
+  gaokao?: number;
+  nationalRank?: number | null;
+  recordedAt: string;
+};
+
 type AchievementDefinition = {
   id: string;
   title: string;
   description: string;
   creditedBy?: string;
   category?: string;
+  unlockMethod?: string;
 };
 
 const achievementDefinitions: AchievementDefinition[] = [
@@ -1361,6 +1751,36 @@ const achievementDefinitions: AchievementDefinition[] = [
   },
   ...communityAchievementDefinitions,
 ];
+
+function achievementMethod(achievement: AchievementDefinition) {
+  const methods: Record<string, string> = {
+    "first-week": "完成第一次正式周结算。",
+    "book-half": "任意一本竞赛教材的课程进度达到40%。",
+    "notes-complete": "任意一本教材的笔记完成度达到99%。",
+    library: "在SAN低于50时，让全部教材课程进度达到70%。",
+    shawshank: "在家长和教练都反对的情况下，坚持完成退赛。",
+    "province-upset": "在四模块平均掌握低于65时，正式进入省队。",
+    "province-one": "在任意一次联赛正式结果中获得省一等奖。",
+    "national-lab": "国赛理论排名进入前240，取得实验考试资格。",
+    "training-team": "国赛最终排名进入前50。",
+    "national-five": "国家集训队选拔后进入五人国家队。",
+    "international-medal": "代表国家队参加国际赛并获得奖牌。",
+    "gaokao-600": "高考总分达到600分。",
+    "gaokao-650": "高考总分达到650分。",
+    "ordinary-strong": "通过普通强基笔试与面试，并被高校录取。",
+    "exceptional-strong": "通过竞赛破格强基路线被高校录取。",
+    recommendation: "凭国家集训队资格完成高校保送接收。",
+    "early-return": "在第16周及以前退赛，并将高三流程推进到二轮复习或更后阶段。",
+    pause: "在身心危机结局中接受休学与治疗安排。",
+    withdrawal: "触发退学结局，离开原有学校轨道。",
+  };
+  return (
+    achievement.unlockMethod ??
+    methods[achievement.id] ??
+    communityAchievementUnlockMethods[achievement.id] ??
+    "该成就的达成记录需要重新核对。"
+  );
+}
 
 const shopItems: ShopItem[] = [
   {
@@ -1678,12 +2098,9 @@ function getWeekPhase(
   const secondNationalTheory =
     tags.includes("第2次省赛-进入省队") &&
     week === calendar.secondNationalWeek;
-  const firstNationalExperiment =
-    tags.includes("第1次国赛-进入实验") &&
-    week === calendar.firstNationalWeek + 1;
-  const secondNationalExperiment =
-    tags.includes("第2次国赛-进入实验") &&
-    week === calendar.secondNationalWeek + 1;
+  // 实验、休息与颁奖由国赛周内的连续事件处理，不再各占一周。
+  const firstNationalExperiment = false;
+  const secondNationalExperiment = false;
   const inNationalTheory = firstNationalTheory || secondNationalTheory;
   const inNationalExperiment =
     firstNationalExperiment || secondNationalExperiment;
@@ -1700,7 +2117,7 @@ function getWeekPhase(
       : nationalDayTraining || winterTraining
         ? "圆阶生科"
         : inProvincialTeamCamp
-          ? "省队集中训练"
+          ? "本校教练安排的校外机构"
         : undefined;
 
   if (inNationalTheory) {
@@ -1750,15 +2167,15 @@ function getWeekPhase(
   } else if (inProvincialTeamCamp) {
     const experimentalFocus =
       tags.includes("国赛集训-实验强化") ||
-      (!tags.includes("国赛集训-理论强化") && week % 2 === 0);
-    label = `省队集训 · 距国赛 ${
+      (!tags.includes("国赛集训-理论强化") && week % 3 !== 0);
+    label = `本校国赛备赛 · 距国赛 ${
       (firstTeamCamp ? calendar.firstNationalWeek : calendar.secondNationalWeek) -
       week
     } 周`;
     fixed.push({
       title: experimentalFocus
-        ? "省队统一实验培训 · 四科轮转"
-        : "省队统一理论培训 · 文献题与套卷",
+        ? "教练安排机构实验培训 · 四科轮转"
+        : "教练安排机构理论培训 · 文献题与套卷",
       cost: 4,
       effects: experimentalFocus
         ? { experiment: 3.5, san: -3.2, coachFavor: 0.5 }
@@ -1774,11 +2191,11 @@ function getWeekPhase(
           },
     });
     fixed.push({
-      title: "省队统一作息 · 晚间复盘",
+      title: "本校教练检查 · 晚间复盘",
       cost: 2,
       effects: { reasoning: 0.8, san: -1.5, mindset: -0.4 },
     });
-    if (week % 2 === 0) {
+    if (week % 2 === 0 || experimentalFocus) {
       fixed.push({
         title: experimentalFocus ? "四科实验循环模考" : "国赛理论全真模考",
         cost: 1,
@@ -1788,7 +2205,7 @@ function getWeekPhase(
         assessment: {
           id: `national-camp-mock-${week}`,
           type: "competition",
-          title: experimentalFocus ? "省队实验循环模考" : "省队理论全真模考",
+          title: experimentalFocus ? "机构实验循环模考" : "机构理论全真模考",
           subjects: experimentalFocus
             ? ["生物化学实验", "植物学实验", "动物学实验", "分子与遗传实验"]
             : ["文献阅读", "文献阅读Ⅱ", "基础综合"],
@@ -2325,7 +2742,16 @@ function adjustedWeeklyEffects(
   const volatility = stats.san < 45 ? 0.28 : 0.12;
   const fluctuation =
     1 + (seededUnit(`${seed}-efficiency-${week}`) * 2 - 1) * volatility;
-  const learningFactor = baseEfficiency * fluctuation * (1 + studyBoost);
+  const familyLearningModifier =
+    stats.familySupport >= 80
+      ? 0.02
+      : stats.familySupport < 25
+        ? -0.05
+        : stats.familySupport < 40
+          ? -0.025
+          : 0;
+  const learningFactor =
+    baseEfficiency * fluctuation * (1 + studyBoost + familyLearningModifier);
   const socialFactor =
     (0.78 + stats.social * 0.004) *
     (0.92 + seededUnit(`${seed}-social-${week}`) * 0.16);
@@ -2485,11 +2911,15 @@ function findWeeklyEvent(
   tags: string[],
   counts: Record<string, number>,
   isTrainingWeek: boolean,
+  retiredRivalIds: string[],
 ) {
   const pool = [...weeklySocialEvents, ...linkedWeeklyEvents];
   const eligible = pool.filter((event) => {
       const trigger = event.trigger;
       if (resolved.includes(event.id)) return false;
+      const mentionedRival = rivalMentionedBy(event);
+      if (mentionedRival && retiredRivalIds.includes(mentionedRival.id))
+        return false;
       if (event.phase === "training" && !isTrainingWeek) return false;
       if (week < trigger.earliestWeek || week > trigger.latestWeek) return false;
       if (trigger.allowedWeeks && !trigger.allowedWeeks.includes(week)) return false;
@@ -2733,9 +3163,12 @@ function makeEvaluationDraftEvent(attempt: ProvincialAttempt): GameEvent {
     id: `provincial-${attempt.attemptNumber}-evaluation-draft`,
     phase: "exam",
     label: "省赛流程 · 答案评议稿",
-    title: `评议稿公布：重新估分 ${formatNumber(attempt.draftScore)} 分。`,
+    title: `评议稿公布：重新估分 ${formatNumber(attempt.draftScore)} / ${PROVINCIAL_MAX_SCORE}。`,
     body: [
-      `机构答案经过三周争议后，部分题目接受了新答案，也有题目被建议删除。重新计算后，你的暂估排名约为全省第 ${attempt.draftRank} 名。`,
+      `得分率 ${formatNumber(provincialScoreRate(attempt.draftScore))}%。机构答案经过三周争议后，部分题目接受了新答案，也有题目被建议删除；重新计算后，你的暂估排名约为全省第 ${attempt.draftRank} 名。`,
+      ...(familiarProvincialLine(attempt, attempt.draftScore, true)
+        ? [familiarProvincialLine(attempt, attempt.draftScore, true)!]
+        : []),
       attempt.appealDelta > 0
         ? "你发现仍有一道题存在可以引用教材或论文反驳的空间。申诉若被接受，会对所有相关选手统一改分。"
         : "你检查了争议题，目前没有发现足以改变统一评分规则的明确证据。",
@@ -2783,7 +3216,11 @@ function makeOfficialResultEvent(
     `第${attempt.attemptNumber}次省赛-提交申诉`,
   );
   const finalScore = round1(
-    clamp(attempt.draftScore + (appealed ? attempt.appealDelta : 0)),
+    clamp(
+      attempt.draftScore + (appealed ? attempt.appealDelta : 0),
+      0,
+      PROVINCIAL_MAX_SCORE,
+    ),
   );
   const finalRank = rankAgainst(attempt.competitorScores, finalScore);
   const award = provincialAward(finalRank, attempt);
@@ -2799,7 +3236,10 @@ function makeOfficialResultEvent(
       ? `省队线公布：全省第 ${finalRank} 名，进入省队。`
       : `最终排名：全省第 ${finalRank} 名，${award}。`,
     body: [
-      `最终有效得分 ${formatNumber(finalScore)}。本届省一截止第 ${attempt.firstPrizeEnd} 名，省二截止第 ${attempt.secondPrizeEnd} 名，省三截止第 ${attempt.thirdPrizeEnd} 名。`,
+      `最终有效得分 ${formatNumber(finalScore)} / ${PROVINCIAL_MAX_SCORE}，得分率 ${formatNumber(provincialScoreRate(finalScore))}%。本届省一截止第 ${attempt.firstPrizeEnd} 名，省二截止第 ${attempt.secondPrizeEnd} 名，省三截止第 ${attempt.thirdPrizeEnd} 名。`,
+      ...(familiarProvincialLine(attempt, finalScore)
+        ? [familiarProvincialLine(attempt, finalScore)!]
+        : []),
       entersTeam
         ? `本届省队共 ${attempt.teamPlaces} 人。你的名字出现在名单中，等待期终于有了明确方向。`
         : attempt.attemptNumber === 1
@@ -2823,6 +3263,15 @@ function makeOfficialResultEvent(
           : "这次省赛已经结束。奖项不会自动替你决定第二年，但它会改变所有人对下一次机会的判断。",
         effects: {
           coachFavor: entersTeam ? 5 : award === "省一等奖" ? 2 : -1,
+          familySupport: entersTeam
+            ? 5
+            : award === "省一等奖"
+              ? 1.5
+              : award === "省二等奖"
+                ? 0.5
+                : award === "省三等奖"
+                  ? -1
+                  : -3,
           mindset: entersTeam ? 3 : -1,
           tags: [
             outcomeTag,
@@ -2835,15 +3284,77 @@ function makeOfficialResultEvent(
   };
 }
 
+function makeNamedProvincialAftermathEvent(
+  attempt: ProvincialAttempt,
+): GameEvent | null {
+  const playerScore = attempt.finalScore ?? attempt.draftScore;
+  const playerRank = attempt.finalRank ?? rankAgainst(attempt.competitorScores, playerScore);
+  const nearby = rankedNamedProvincialResults(attempt, playerScore).sort(
+    (a, b) => {
+      const aStory = rivals.some((rival) => rival.id === a.rivalId) ? 0 : 1;
+      const bStory = rivals.some((rival) => rival.id === b.rivalId) ? 0 : 1;
+      return (
+        aStory - bStory ||
+        Math.abs(a.rank - playerRank) - Math.abs(b.rank - playerRank)
+      );
+    },
+  );
+  const focus = nearby[0];
+  if (!focus) return null;
+  const playerAhead = playerRank < focus.rank;
+  return {
+    id: `provincial-${attempt.attemptNumber}-named-aftermath-${focus.rivalId}`,
+    phase: "exam",
+    label: "联赛之后 · 熟人榜单",
+    title: playerAhead
+      ? `这一次，你的名字排在${focus.name}前面。`
+      : `${focus.name}的名字先于你出现在榜单上。`,
+    body: [
+      `你是全省第 ${playerRank} 名，${focus.name}是第 ${focus.rank} 名。分数之间的距离只有 ${formatNumber(Math.abs(playerScore - focus.score))} 分，却足以把两个人带向不同的暑假。`,
+      focus.school === "本校"
+        ? "下一次回到竞赛教室时，你们仍会在同一张训练表上见面；排名没有自动解释过去共同学习过的那些晚上。"
+        : "你们最初只在机构榜单和聊天群里认识。正式排名第一次让那个名字与一段具体命运连在一起。",
+    ],
+    concealConsequences: true,
+    visualNovel: true,
+    trigger: { earliestWeek: 1, latestWeek: 120 },
+    choices: [
+      {
+        id: `named-result-message-${focus.rivalId}`,
+        title: "私下发消息，不用名次定义这次对话",
+        preview: "对方会记住你怎样谈论胜负。",
+        result: playerAhead
+          ? `${focus.name}先祝贺了你，随后才说自己会不会继续。你删掉了原本想发的复盘建议，只问TA暑假准备怎么过。`
+          : `${focus.name}没有用安慰的语气，只把自己也做错的几道题发了过来。你们第一次承认，同一张卷子可以让两个人同时不甘心。`,
+        effects: { peerFavor: 2, san: 0.5, tags: [`${focus.rivalId}-联赛后保持联系`] },
+      },
+      {
+        id: `named-result-compare-${focus.rivalId}`,
+        title: "把两人的分模块结果逐项比较",
+        preview: "比较可能带来进步，也会延长考后的紧绷。",
+        result: `你们找到了差距最大的模块，也发现总分接近并不代表失分方式相同。榜单被拆回一道道具体的题，胜负感却没有完全消失。`,
+        effects: { reasoning: 0.5, problemSpeed: 0.5, san: -2, tags: [`${focus.rivalId}-联赛后对表`] },
+      },
+      {
+        id: `named-result-distance-${focus.rivalId}`,
+        title: "暂时不联系，让结果先沉淀一周",
+        preview: "保持距离也是一种处理方式。",
+        result: "你关掉榜单，没有立刻把祝贺、遗憾或不甘投向另一个人。有些关系经得住停顿，有些张力则会被这次沉默留下。",
+        effects: { san: 1.5, mindset: 0.3, peerFavor: -0.5 },
+      },
+    ],
+  };
+}
+
 function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
   return {
     id: `national-${attemptNumber}-camp-choice`,
     phase: "training",
-    label: "省队流程 · 国赛集训路线",
-    title: "省队名单确认后，三个月训练表被发到了群里。",
+    label: "国赛备赛 · 本校外培路线",
+    title: "省队名单确认后，本校教练开始联系实验机构与模考。",
     body: [
-      "五月到八月几乎没有普通暑假：实验中心轮转、理论套卷、机构模考和省队统一测试交替出现。",
-      "教练建议所有人跟统一计划走，但你仍可以把额外外培时间偏向实验或理论。偏科会带来明显收益，也会留下另一端风险。",
+      "省队并不会把所有学校集中起来训练。五月到八月，各校教练分别联系机构、大学实验室和模考；不同学校的安排甚至可能完全不同。",
+      "你的教练给出了几套可报销的方案。理论卷与实验模考都会有，但实验训练更密集；你仍可以决定额外时间偏向哪一端。",
     ],
     trigger: { earliestWeek: 1, latestWeek: 120 },
     choices: [
@@ -2861,8 +3372,8 @@ function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
       {
         id: `national-camp-theory-${attemptNumber}`,
         title: "额外参加文献题与理论模考",
-        preview: "思辨增长更快 · 实验训练主要依赖省队统一安排",
-        result: "外培群每天发来论文和整卷。你仍参加统一实验，但额外时间几乎全部留给理论。",
+        preview: "思辨增长更快 · 实验训练主要依赖本校教练安排",
+        result: "外培群每天发来论文和整卷。你仍参加教练报名的实验课，但额外时间几乎全部留给理论。",
         effects: {
           reasoning: 2.5,
           san: -1,
@@ -2871,9 +3382,9 @@ function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
       },
       {
         id: `national-camp-balanced-${attemptNumber}`,
-        title: "只跟省队统一计划，保留恢复时间",
+        title: "只跟本校教练安排，保留恢复时间",
         preview: "实验与理论均衡 · 心态 +2 · 教练好感 +1",
-        result: "你拒绝再叠加一套机构课表。空下来的时间不多，但足以维持睡眠和复盘。",
+        result: "你拒绝在本校已报名的外培之外再叠一套课表。空下来的时间不多，但足以维持睡眠和复盘。",
         effects: {
           mindset: 2,
           coachFavor: 1,
@@ -2925,7 +3436,29 @@ function makeNationalOpeningEvent(
   };
 }
 
+function nearestNamedNationalResult(
+  attempt: NationalAttempt,
+  stage: "theory" | "final" = "final",
+) {
+  const playerRank =
+    stage === "theory" ? attempt.theoryRank : (attempt.finalRank ?? attempt.theoryRank);
+  return [...(attempt.namedResults ?? [])].sort((a, b) => {
+    const aStory = rivals.some((rival) => rival.id === a.rivalId) ? 0 : 1;
+    const bStory = rivals.some((rival) => rival.id === b.rivalId) ? 0 : 1;
+    const rankA = stage === "theory" ? a.theoryRank : a.finalRank;
+    const rankB = stage === "theory" ? b.theoryRank : b.finalRank;
+    return aStory - bStory || Math.abs(rankA - playerRank) - Math.abs(rankB - playerRank);
+  })[0];
+}
+
 function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
+  const nearby = [...(attempt.namedResults ?? [])]
+    .sort(
+      (a, b) =>
+        Math.abs(a.theoryRank - attempt.theoryRank) -
+        Math.abs(b.theoryRank - attempt.theoryRank),
+    )
+    .slice(0, 3);
   return {
     id: `national-${attempt.attemptNumber}-theory-night`,
     phase: "exam",
@@ -2935,6 +3468,18 @@ function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
       : `理论第 ${attempt.theoryRank} 名：未进入前240。`,
     body: [
       `理论原始表现 ${formatNumber(attempt.theoryRaw)}，换算T分 ${formatNumber(attempt.theoryT)}。排名在当晚公布，走廊里不断有人刷新名单。`,
+      ...(nearby.length
+        ? [
+            `你认识的选手里，${nearby
+              .map(
+                (result) =>
+                  `${result.name}理论第${result.theoryRank}${
+                    result.qualifiedForExperiment ? "，进入实验" : "，止步理论"
+                  }`,
+              )
+              .join("；")}。`,
+          ]
+        : []),
       attempt.qualifiedForExperiment
         ? "你的名字出现在实验分组表中。第二天上午两门、下午两门，四个板块将占满整整一天。"
         : "你的国赛考试部分到此结束。实验考场仍会照常开放，但名单上没有你的考号。",
@@ -2967,6 +3512,7 @@ function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
 }
 
 function makeNationalRestEvent(attempt: NationalAttempt): GameEvent {
+  const nearby = nearestNamedNationalResult(attempt, "theory");
   return {
     id: `national-${attempt.attemptNumber}-rest-day`,
     phase: "exam",
@@ -2994,6 +3540,44 @@ function makeNationalRestEvent(attempt: NationalAttempt): GameEvent {
         result: "你列出了一张越来越长的可能失分表。它没有改变任何操作，却占据了整个下午。",
         effects: { san: -3, mindset: -1 },
       },
+      ...(nearby
+        ? [
+            {
+              id: `national-rest-rival-${nearby.rivalId}-${attempt.attemptNumber}`,
+              title: `和${nearby.name}在酒店走廊聊一会儿`,
+              preview: "你们会谈考试，也可能谈考试之外的事。",
+              result: nearby.qualifiedForExperiment === attempt.qualifiedForExperiment
+                ? `你和${nearby.name}都在等待下一张名单。你们交换了最不确定的一处判断，随后约定不再继续对答案。`
+                : `一道前240名的线把你和${nearby.name}分到不同日程。你们没有回避那种尴尬，只把明天各自要做的事说清楚。`,
+              effects: { peerFavor: 2, san: 1, mindset: 0.5 },
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
+function makeNationalExperimentEvent(attempt: NationalAttempt): GameEvent {
+  return {
+    id: `national-${attempt.attemptNumber}-experiment-day`,
+    phase: "exam",
+    label: "全国决赛 · 实验考试日",
+    title: "上午两门、下午两门，四个实验板块在一天内全部结束。",
+    body: [
+      ...attempt.experimentScores.map(
+        (item) => `${item.name}：现场表现 ${formatNumber(item.score)}`,
+      ),
+      `实验T分 ${formatNumber(attempt.experimentT)}。操作、记录和解释彼此牵连，理论掌握只能帮助你理解任务，无法替代手上的熟练度。`,
+    ],
+    trigger: { earliestWeek: 1, latestWeek: 120 },
+    choices: [
+      {
+        id: `national-experiment-finish-${attempt.attemptNumber}`,
+        title: "交回最后一份记录纸，离开实验楼",
+        preview: "四科实验完成 · SAN -5",
+        result: "最后一场铃响时，你已经没有精力核对任何细节。考试结束了，剩下的排名不再由新的学习改变。",
+        effects: { san: -5, mindset: -1 },
+      },
     ],
   };
 }
@@ -3001,6 +3585,7 @@ function makeNationalRestEvent(attempt: NationalAttempt): GameEvent {
 function makeNationalAwardEvent(attempt: NationalAttempt): GameEvent {
   const hasFinalRank = attempt.finalRank !== null;
   const isTrueSilver = isTrueSilverRank(attempt.finalRank);
+  const nearby = nearestNamedNationalResult(attempt);
   return {
     id: `national-${attempt.attemptNumber}-award`,
     phase: "exam",
@@ -3015,6 +3600,11 @@ function makeNationalAwardEvent(attempt: NationalAttempt): GameEvent {
             isTrueSilver ? " 你位于151—240名的“真银牌”区间。" : ""
           }`
         : `理论排名第 ${attempt.theoryRank}，未取得实验考试资格；该名次直接进入最终奖牌序列，你获得${attempt.medal}。`,
+      ...(nearby
+        ? [
+            `${nearby.name}最终第 ${nearby.finalRank} 名，获得${nearby.medal}。在倒序念名的礼堂里，你终于知道那个熟悉的名字会在自己之前还是之后响起。`,
+          ]
+        : []),
     ],
     trigger: { earliestWeek: 1, latestWeek: 120 },
     choices: [
@@ -3061,14 +3651,19 @@ function findMilestoneEvent(
   const secondNational = nationalAttempts.find(
     (attempt) => attempt.attemptNumber === 2,
   );
+  const firstNamedAftermath = firstAttempt
+    ? makeNamedProvincialAftermathEvent(firstAttempt)
+    : null;
+  const secondNamedAftermath = secondAttempt
+    ? makeNamedProvincialAftermathEvent(secondAttempt)
+    : null;
   const candidates: Array<[number, GameEvent]> = [
     [12, trainingMilestoneEvents.nationalDay],
     [28, trainingMilestoneEvents.winter],
-    [calendar.firstExamWeek - 1, makeHotelEvent(1)],
-    [calendar.secondExamWeek - 1, makeHotelEvent(2)],
+    [calendar.firstExamWeek, makeHotelEvent(1)],
+    [calendar.secondExamWeek, makeHotelEvent(2)],
     ...(firstAttempt
       ? ([
-          [calendar.firstExamWeek + 1, makePostExamRouteEvent(1)],
           [calendar.firstExamWeek + 3, makeEvaluationDraftEvent(firstAttempt)],
           [
             calendar.firstExamWeek + 4,
@@ -3076,15 +3671,26 @@ function findMilestoneEvent(
           ],
         ] as Array<[number, GameEvent]>)
       : []),
+    ...(firstNamedAftermath
+      ? ([[calendar.firstExamWeek + 6, firstNamedAftermath]] as Array<[
+          number,
+          GameEvent,
+        ]>)
+      : []),
     ...(secondAttempt
       ? ([
-          [calendar.secondExamWeek + 1, makePostExamRouteEvent(2)],
           [calendar.secondExamWeek + 3, makeEvaluationDraftEvent(secondAttempt)],
           [
             calendar.secondExamWeek + 4,
             makeOfficialResultEvent(secondAttempt, storyTags),
           ],
         ] as Array<[number, GameEvent]>)
+      : []),
+    ...(secondNamedAftermath
+      ? ([[calendar.secondExamWeek + 6, secondNamedAftermath]] as Array<[
+          number,
+          GameEvent,
+        ]>)
       : []),
     ...(storyTags.includes("第1次省赛-进入省队")
       ? ([
@@ -3096,23 +3702,6 @@ function findMilestoneEvent(
       ? ([
           [calendar.secondExamWeek + 5, makeNationalCampChoiceEvent(2)],
           [calendar.secondNationalWeek, makeNationalOpeningEvent(2, seed)],
-        ] as Array<[number, GameEvent]>)
-      : []),
-    ...(firstNational
-      ? ([
-          [calendar.firstNationalWeek + 1, makeTheoryNightEvent(firstNational)],
-          [calendar.firstNationalWeek + 2, makeNationalRestEvent(firstNational)],
-          [calendar.firstNationalWeek + 3, makeNationalAwardEvent(firstNational)],
-        ] as Array<[number, GameEvent]>)
-      : []),
-    ...(secondNational
-      ? ([
-          [
-            calendar.secondNationalWeek + 1,
-            makeTheoryNightEvent(secondNational),
-          ],
-          [calendar.secondNationalWeek + 2, makeNationalRestEvent(secondNational)],
-          [calendar.secondNationalWeek + 3, makeNationalAwardEvent(secondNational)],
         ] as Array<[number, GameEvent]>)
       : []),
     [calendar.temporaryLeaveWeek, leaveMilestoneEvents.temporary],
@@ -3134,7 +3723,13 @@ const specialtyLabels: Record<Rival["specialty"], string> = {
   module4: "第四模块",
 };
 
-function rivalSnapshot(rival: Rival, seed: string, week: number) {
+function rivalSnapshot(
+  rival: Rival,
+  seed: string,
+  week: number,
+  retiredWeek?: number,
+) {
+  const effectiveWeek = retiredWeek === undefined ? week : Math.min(week, retiredWeek);
   const startingLevel = 28 + (hashSeed(`${seed}-${rival.id}-base`) % 27);
   const growthRate =
     rival.gradeRelation === "上届"
@@ -3142,27 +3737,34 @@ function rivalSnapshot(rival: Rival, seed: string, week: number) {
       : rival.gradeRelation === "下届"
         ? 0.48
         : 0.39;
-  const trainingCurve = week > 40 ? Math.min(12, (week - 40) * 0.12) : 0;
+  const trainingCurve = effectiveWeek > 40 ? Math.min(12, (effectiveWeek - 40) * 0.12) : 0;
   const formNoise =
-    (seededUnit(`${seed}-${rival.id}-form-${Math.floor(week / 3)}`) - 0.5) *
+    (seededUnit(`${seed}-${rival.id}-form-${Math.floor(effectiveWeek / 3)}`) - 0.5) *
     12;
   const level = clamp(
-    startingLevel + week * growthRate + trainingCurve + formNoise,
+    startingLevel + effectiveWeek * growthRate + trainingCurve + formNoise,
     18,
     96,
   );
   const previous =
     startingLevel +
-    Math.max(0, week - 3) * growthRate +
+    Math.max(0, effectiveWeek - 3) * growthRate +
     (seededUnit(
-      `${seed}-${rival.id}-form-${Math.max(0, Math.floor(week / 3) - 1)}`,
+      `${seed}-${rival.id}-form-${Math.max(0, Math.floor(effectiveWeek / 3) - 1)}`,
     ) -
       0.5) *
       12;
   const trend = level - previous;
   return {
     level: round1(level),
-    trendLabel: trend > 2 ? "近期上升" : trend < -2 ? "近期波动" : "发挥稳定",
+    trendLabel:
+      retiredWeek !== undefined && week > retiredWeek
+        ? "退赛后停止训练"
+        : trend > 2
+          ? "近期上升"
+          : trend < -2
+            ? "近期波动"
+            : "发挥稳定",
   };
 }
 
@@ -3266,6 +3868,80 @@ function seededRivalIdentity(rival: Rival, seed: string) {
   };
 }
 
+function generatedCoreRivalContexts(
+  seed: string,
+  week: number,
+  social: number,
+  targets: Record<Rival["gradeRelation"], number>,
+): NamedExamRivalContext[] {
+  const schoolPool = [
+    "临江第一中学",
+    "青屿高级中学",
+    "望河外国语学校",
+    "海岳中学",
+    "云川实验中学",
+    "北湖附中",
+    "南岭高级中学",
+    "东江第一中学",
+    "澄海中学",
+    "西陵外国语学校",
+    "榕城实验学校",
+    "江岳中学",
+  ];
+  const specialties = ["module1", "module2", "module3", "module4"] as const;
+  const generatedContexts: NamedExamRivalContext[] = [];
+  const usedNames = new Set(
+    rivals.map((rival) => seededRivalIdentity(rival, seed).name),
+  );
+  (["上届", "同届", "下届"] as const).forEach((gradeRelation) => {
+    const existing = rivals.filter(
+      (rival) =>
+        rival.scope !== "national" && rival.gradeRelation === gradeRelation,
+    ).length;
+    const needed = Math.max(0, targets[gradeRelation] - existing);
+    for (let index = 0; index < needed; index += 1) {
+      const id = `core-${gradeRelation}-${index}`;
+      const token = hashSeed(`${seed}-${id}`);
+      const revealSocial = 42 + (token % 27);
+      const synthetic: Rival = {
+        id,
+        name: "省内核心选手",
+        school: schoolPool[(token >>> 4) % schoolPool.length],
+        gradeRelation,
+        scope: "province",
+        revealWeek: 16 + ((token >>> 7) % 18),
+        specialty: specialties[(token >>> 10) % specialties.length],
+        personality: "只有在培训、联考或正式榜单上才逐渐显出轮廓",
+        studyStyle: "训练方式尚未完全公开。",
+        hiddenStrength: "本届省内核心竞争者。",
+        revealSocial,
+      };
+      const retirementRoll = seededUnit(`${seed}-${id}-retirement-roll`);
+      const retirementWeek =
+        retirementRoll < 0.17
+          ? 16 + (hashSeed(`${seed}-${id}-retirement-week`) % 62)
+          : undefined;
+      let name = seededRivalIdentity(synthetic, seed).name;
+      let nameSalt = 1;
+      while (usedNames.has(name) && nameSalt <= 12) {
+        name = seededRivalIdentity(
+          { ...synthetic, id: `${id}-name-${nameSalt}` },
+          seed,
+        ).name;
+        nameSalt += 1;
+      }
+      usedNames.add(name);
+      generatedContexts.push({
+        rival: synthetic,
+        name,
+        retiredWeek: retirementWeek,
+        knownAtExam: week >= synthetic.revealWeek && social >= revealSocial,
+      });
+    }
+  });
+  return generatedContexts;
+}
+
 function seedRivalText(text: string, seed: string) {
   return rivals
     .reduce(
@@ -3318,10 +3994,12 @@ function adaptRivalChoiceEffects(
   effects: GameEffect,
   seed: string,
   stats: PlayerStats,
+  relationships: Record<string, DeepRelationship>,
 ) {
   const rival = rivalMentionedBy(event);
   if (!rival) return effects;
   const temperament = seededRivalIdentity(rival, seed).temperament;
+  const relation = normalizeRelationship(relationships[rival.id], seed, rival.id);
   const adapted = { ...effects };
   if ((adapted.peerFavor ?? 0) > 0) {
     const relationshipFactor = stats.peerFavor >= 55 ? 1.2 : stats.peerFavor < 20 ? 0.8 : 1;
@@ -3339,6 +4017,13 @@ function adaptRivalChoiceEffects(
   }
   if (temperament === "curious" && (adapted.social ?? 0) >= 0) {
     adapted.social = round1((adapted.social ?? 0) + 0.5);
+  }
+  if (relation.tension >= 35 && /竞争|模考|排名|榜/.test(`${event.label}${event.title}`)) {
+    adapted.reasoning = round1((adapted.reasoning ?? 0) + 0.3);
+    adapted.san = round1((adapted.san ?? 0) - 0.4);
+    if ((adapted.peerFavor ?? 0) > 0)
+      adapted.peerFavor = round1((adapted.peerFavor ?? 0) * 0.88);
+    else adapted.mindset = round1((adapted.mindset ?? 0) - 0.2);
   }
   return adapted;
 }
@@ -3708,16 +4393,35 @@ function makeTeammateDepartureEvent(
   initialTeamSize: number,
   retiredRivalIds: string[],
   calendar: ReturnType<typeof calendarFor>,
+  relationships: Record<string, DeepRelationship>,
+  storyTags: string[],
 ): GameEvent | null {
+  const inNationalPreparation =
+    (storyTags.includes("第1次省赛-进入省队") &&
+      targetWeek > calendar.firstExamWeek + 4 &&
+      targetWeek <= calendar.firstNationalWeek) ||
+    (storyTags.includes("第2次省赛-进入省队") &&
+      targetWeek > calendar.secondExamWeek + 4 &&
+      targetWeek <= calendar.secondNationalWeek);
+  if (
+    inNationalPreparation &&
+    seededUnit(`${seed}-unavoidable-departure-${targetWeek}`) >= 0.018
+  )
+    return null;
   const waveBases = [23, calendar.firstExamWeek + 4, 47, calendar.secondExamWeek + 4];
   const waveWeek = waveBases.find(
     (baseWeek, index) =>
       targetWeek === baseWeek + 1 + (hashSeed(`${seed}-wave-week-${index}`) % 2),
   );
-  if (waveWeek !== undefined && activeTeamSize >= 2) {
+  const waveRoll = seededUnit(`${seed}-wave-trigger-${targetWeek}`);
+  if (waveWeek !== undefined && activeTeamSize >= 2 && waveRoll < 0.58) {
+    const severity = seededUnit(`${seed}-wave-severity-${targetWeek}`);
+    const maximumLeaving = Math.max(1, activeTeamSize - 1);
     const leaving = Math.min(
-      activeTeamSize - 1,
-      2 + (hashSeed(`${seed}-wave-size-${targetWeek}`) % 4),
+      maximumLeaving,
+      severity > 0.94
+        ? Math.max(2, Math.round(activeTeamSize * (0.65 + severity * 0.2)))
+        : 1 + Math.floor(severity * Math.min(6, maximumLeaving)),
     );
     const after = Math.max(1, activeTeamSize - leaving);
     const afterExam =
@@ -3725,17 +4429,26 @@ function makeTeammateDepartureEvent(
       Math.abs(targetWeek - calendar.firstExamWeek) <= 7 ||
       targetWeek > calendar.secondExamWeek &&
       Math.abs(targetWeek - calendar.secondExamWeek) <= 7;
+    const waveScenes = [
+      ["训练群一夜之间少了好几条打卡", "退群提示没有连续出现，名字却在第二天被管理员逐个移出名单。有人私下告别，也有人一句话都没留下。"],
+      ["期末家长会后，靠窗那组没有再回来", "几位家长分别作出决定，结果却在同一个星期落下。教材被抱回班级，实验服则留在柜子里。"],
+      ["教练重排了整张训练表", "原来的分组已经凑不齐。留下的人被重新组合，曾经默认会一起走到五月的名字变成了表格里的空行。"],
+      ["一次模考把队伍分成了三种方向", "有人继续冲省队，有人降强度保常规，也有人当晚决定停止。没有统一口号，只有不同家庭各自计算出的答案。"],
+      ["竞赛教室的钥匙突然多出来一串", "退赛的人把钥匙交回办公室。教练把它们放进抽屉，没有逐个点名，金属碰撞声却让所有人都抬了头。"],
+      ["班主任们在同一周集中约谈", "常规缺口、睡眠和政策风险被分别摆上桌面。几场互不相干的谈话，最后让队伍同时少了几个人。"],
+      ["校内选拔名单重新公示", "公告栏没有写“退赛”，只更新了下一阶段参训名单。被删去的名字仍在旧胶痕下面若隐若现。"],
+      ["一顿散伙饭来得比比赛更早", "原本只是普通夜宵，最后却变成几个人离队前唯一一次合照。没人喊口号，大家只争着把剩下的饮料喝完。"],
+      ["寒假结束，返校的人比出发时少", "外培群仍在发解析，返校大巴却空出了几排。有人转回常规，有人换了赛道，还有人只说想先睡够一周。"],
+      ["联赛结果让去留在同一天失去缓冲", "喜报和遗憾同时传回学校。没进队的人并不都离开，拿奖的人也不都继续；队伍在一晚之间重新认识了机会成本。"],
+    ] as const;
+    const [waveTitle, waveBody] = waveScenes[hashSeed(`${seed}-wave-copy-${targetWeek}`) % waveScenes.length];
     return {
       id: `teammate-wave-${leaving}-${targetWeek}`,
       phase: "weekly",
       label: afterExam ? "队伍变化 · 联赛后的退赛潮" : "队伍变化 · 成绩节点后的退赛潮",
-      title: afterExam
-        ? `名单与估分逐渐明朗，几个人在同一周收起了竞赛书。`
-        : `期末排名贴出后，竞赛教室突然空了一排。`,
+      title: waveTitle,
       body: [
-        afterExam
-          ? "有人认为下一次机会仍值得赌，有人的家长已经替他算完常规缺口。退赛不是集体决定，却集中发生在结果最刺眼的几天。"
-          : "班主任、家长和教练分别约谈了不同的人。理由并不相同：成绩、作息、政策和长期疲惫，最后却都指向离开。",
+        waveBody,
         `这一周共有 ${leaving} 人停止训练，在队人数从 ${activeTeamSize} 变成 ${after}。留下的人重新分座位，也重新判断自己是不是还愿意继续。`,
       ],
       trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
@@ -3770,10 +4483,7 @@ function makeTeammateDepartureEvent(
       targetWeek ===
       baseWeek + (hashSeed(`${seed}-departure-week-${index}`) % 3),
   );
-  if (
-    scheduledWeek === undefined ||
-    activeTeamSize <= Math.max(9, initialTeamSize - 7)
-  )
+  if (scheduledWeek === undefined || activeTeamSize <= 2)
     return null;
   const candidates = rivals.filter(
     (rival) =>
@@ -3784,6 +4494,19 @@ function makeTeammateDepartureEvent(
     candidates[
       hashSeed(`${seed}-departure-rival-${targetWeek}`) % candidates.length
     ];
+  const relation = normalizeRelationship(relationships[rival.id], seed, rival.id);
+  const protectedRoute = ["dating", "crush", "friend"].includes(relation.route);
+  const rivalFamilyType = hashSeed(`${seed}-${rival.id}-family-profile`) % 5;
+  const familyRetirementPressure = [0.13, 0.07, -0.05, -0.09, 0.02][rivalFamilyType];
+  const departureChance = clamp(
+    0.72 - relation.bond * 0.005 - relation.trust * 0.003 -
+      (relation.route === "dating" ? 0.24 : relation.route === "crush" ? 0.14 : 0) +
+      familyRetirementPressure,
+    protectedRoute ? 0.08 : 0.24,
+    0.72,
+  );
+  if (seededUnit(`${seed}-departure-trigger-${targetWeek}-${rival.id}`) >= departureChance)
+    return null;
   const reasons = [
     {
       title: "家长反对",
@@ -3821,9 +4544,62 @@ function makeTeammateDepartureEvent(
       detail:
         "教练说模拟不能代表正式考试，对方却回答，机会成本也不能等到正式考试后才计算。",
     },
+    {
+      title: "健康暂停",
+      lead: `${rival.name}在连续失眠和胃痛之后，被家长带去做了检查。`,
+      detail:
+        "检查结果不算严重，却足够让所有人承认现在的作息已经不能继续。对方先停掉晚训，也退出了下一轮机构模考。",
+    },
+    {
+      title: "与教练长期冲突",
+      lead: `${rival.name}和教练在训练安排上又争执了一次，这次没有像过去一样各退一步。`,
+      detail:
+        "争论并不只关于一道题，而是长期积累的否定、加练与沟通方式。对方把资料留给队友，决定不再接受这套训练关系。",
+    },
+    {
+      title: "兴趣转移",
+      lead: `${rival.name}发现自己真正愿意熬夜读的，已经不是竞赛教材。`,
+      detail:
+        "对方开始参加社团项目，也重新捡起曾经搁置的爱好。离开不是因为某场考试失败，而是终于愿意承认兴趣已经转向。",
+    },
+    {
+      title: "家庭突发变故",
+      lead: `${rival.name}请了一周假，回来后决定暂停全部校外培训。`,
+      detail:
+        "TA没有在群里解释家里发生了什么，只说接下来需要把时间留给家庭和常规课。队里的人没有追问，只把借走的书慢慢收齐。",
+    },
   ];
-  const reason =
-    reasons[hashSeed(`${seed}-departure-reason-${targetWeek}`) % reasons.length];
+  const reasonIndex =
+    rivalFamilyType === 0 &&
+    seededUnit(`${seed}-family-driven-departure-${targetWeek}-${rival.id}`) < 0.46
+      ? hashSeed(`${seed}-family-reason-${targetWeek}`) % 2
+      : hashSeed(`${seed}-departure-reason-${targetWeek}`) % reasons.length;
+  const reason = reasons[reasonIndex];
+  const aftermaths = [
+    `${rival.name}最后一次打卡停在周三。之后，竞赛队从 ${activeTeamSize} 人变成了 ${activeTeamSize - 1} 人。`,
+    `实验柜里多出一件洗净叠好的白大褂，袖口写着${rival.name}的名字。队伍还剩 ${activeTeamSize - 1} 人。`,
+    `下一次分组时，原来和${rival.name}搭档的人被并进另一组；训练表上的人数改成了 ${activeTeamSize - 1}。`,
+    `返校大巴的座位表被重新打印。${rival.name}那一格被删去，后面的名字整体向前挪了一位。`,
+    `共享题单仍保留着${rival.name}做过的批注，但新的完成记录不会再出现。队伍少到 ${activeTeamSize - 1} 人。`,
+    `教练在点名时停顿了半秒，随后从下一位继续。没有告别仪式，在队人数却已经变成 ${activeTeamSize - 1}。`,
+    `${rival.name}把没用完的活页纸和标签分给大家，像是普通地整理一次桌面。第二天，训练群少了一个人。`,
+    `常规班晚自习的窗边重新出现了${rival.name}。你隔着走廊看见TA低头补作业，手边不再放竞赛书。`,
+    `下一场校内模考的准考名单只有 ${activeTeamSize - 1} 个名字。直到卷子发下来，离开才第一次变得具体。`,
+    `${rival.name}没有退出所有群，只把群昵称里的“生竞”两个字删掉。留下的人也没有立刻讨论这件事。`,
+  ];
+  const aftermath =
+    aftermaths[
+      hashSeed(`${seed}-departure-aftermath-${targetWeek}-${rival.id}`) %
+        aftermaths.length
+    ];
+  const persuadeChance = clamp(
+    0.18 + relation.bond * 0.006 + relation.trust * 0.004 +
+      (relation.route === "dating" ? 0.2 : relation.route === "friend" ? 0.12 : relation.route === "crush" ? 0.1 : 0),
+    0.18,
+    0.88,
+  );
+  const persuasionSucceeds =
+    seededUnit(`${seed}-departure-persuade-${targetWeek}-${rival.id}`) < persuadeChance;
   return {
     id: `teammate-departure-${rival.id}-${targetWeek}`,
     phase: "weekly",
@@ -3831,10 +4607,32 @@ function makeTeammateDepartureEvent(
     title: reason.lead,
     body: [
       reason.detail,
-      `训练群人数没有立刻变化，${rival.name}的头像却再也没有出现在打卡消息下面。竞赛队从 ${activeTeamSize} 人变成了 ${activeTeamSize - 1} 人。`,
+      aftermath,
     ],
     trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
     choices: [
+      ...(relation.bond >= 22 || protectedRoute
+        ? [
+            {
+              id: `departure-persuade-${persuasionSucceeds ? "success" : "fail"}-${rival.id}`,
+              title: "认真问TA：能不能先暂停两周，再决定是否彻底离开",
+              preview: `你们的羁绊会影响TA是否愿意留下（当前劝回可能约 ${Math.round(persuadeChance * 100)}%）`,
+              result: persuasionSucceeds
+                ? `${rival.name}没有立刻答应继续，只同意把退赛申请压在抽屉里两周。之后TA重新回到训练群，强度比以前低，但没有从你的生活里突然消失。`
+                : `${rival.name}认真听完了你的话，也谢谢你愿意挽留。可是这次决定牵涉家长、常规和长期耗竭，羁绊能让告别更诚实，却不能替TA承担全部代价。`,
+              effects: {
+                peerFavor: persuasionSucceeds ? 3 : 2,
+                san: persuasionSucceeds ? -1 : -3,
+                mindset: persuasionSucceeds ? 1 : -1,
+                tags: [
+                  persuasionSucceeds
+                    ? `${rival.id}-被羁绊劝回`
+                    : `${rival.id}-挽留未果`,
+                ],
+              },
+            },
+          ]
+        : []),
       {
         id: `departure-message-${rival.id}`,
         title: "私下发消息，问对方以后是否还愿意联系",
@@ -3873,6 +4671,230 @@ function makeTeammateDepartureEvent(
           tags: ["队友退赛后加练"],
         },
       },
+    ],
+  };
+}
+
+function makeFamilyWeeklyEvent(
+  targetWeek: number,
+  seed: string,
+  profile: (typeof familyProfiles)[number],
+  stats: PlayerStats,
+  storyTags: string[],
+  resolvedEvents: string[],
+): GameEvent | null {
+  if (targetWeek < 8 || targetWeek % 7 !== hashSeed(`${seed}-family-rhythm`) % 7)
+    return null;
+  if (seededUnit(`${seed}-family-event-${targetWeek}`) > 0.66) return null;
+  const id = `family-weekly-${targetWeek}`;
+  if (resolvedEvents.includes(id)) return null;
+  const preparingForNational =
+    (storyTags.includes("第1次省赛-进入省队") &&
+      !storyTags.some((tag) => /^第1次国赛-/.test(tag))) ||
+    (storyTags.includes("第2次省赛-进入省队") &&
+      !storyTags.some((tag) => /^第2次国赛-/.test(tag)));
+  const scenes = [
+    ["饭桌上的成绩截图", "父母从家长群里看见了这次考试。截图只有名次，没有你在考场上经历的那些犹豫。"],
+    ["回家路上的十分钟", "父母来接你时没有立刻问分数，只问最近是不是总在凌晨才睡。车窗外的路灯一盏盏掠过去。"],
+    ["一本被翻过的教材", "你发现父母试着读了教材目录。他们仍然不懂那些名词，却第一次意识到这不是几张卷子的投入。"],
+    ["亲戚饭局后的追问", "亲戚拿另一位同龄人的常规排名作比较。回家后，父母也显得比平时更焦虑。"],
+    ["培训报销单之外", "父母把培训、住宿与个人零花钱分开列在纸上，想知道你真正缺的是钱、休息，还是一句允许停下。"],
+    ["一次没有结论的散步", "晚饭后，你们绕小区走了两圈。父母没有保证永远支持，你也没有保证一定得奖。"],
+    ["教练打来的电话", "教练向家长汇报了近况。父母听见的是进度、排名和风险，而你更在意那些没有被电话说出的疲惫。"],
+    ["发烧那天的书包", "你带着低烧仍想去训练。父母把竞赛书从门口拿回房间，第一次明确说成绩不能排在身体前面。"],
+    ["省队名单之后的安静", preparingForNational ? "进入省队后，家里很少再提立刻退赛。新的担忧变成实验安全、睡眠和八月之后该怎么走。" : "家里对竞赛的态度仍在摇摆，但这一晚没有人要求你立即作决定。"],
+    ["一次考得不错的周末", "成绩比预期好。父母没有把它说成理所当然，而是问你想吃什么，愿不愿意暂时不复盘。"],
+    ["快递盒里的培训讲义", "父母签收了机构寄来的资料。纸张比想象中厚，他们第一次把‘再学一阵’换算成了接下来许多个周末。"],
+    ["班主任的一句提醒", "班主任在家校联系里写下‘常规作业缺交’。父母没有立刻责骂，却把这句话放在饭桌上等你解释。"],
+    ["凌晨还亮着的台灯", "父母半夜起床时看见你仍在订正卷子。有人想催你睡，有人又怕关灯会打断你仅剩的一点信心。"],
+    ["一次被取消的家庭出行", "原定的周末出行撞上集训。父母改了车票，但也第一次认真问：竞赛是不是正在占满全家的时间。"],
+    ["家长群里的经验帖", "另一位家长发来一篇很长的经验帖，里面既有保送喜报，也有退赛后追赶常规的故事。父母读完后比之前更难给出简单答案。"],
+    ["消息栏里过长的聊天", storyTags.some((tag) => tag.includes("正式恋爱")) ? "父母无意间看见你和一个同学聊到很晚。他们在意的不只是早恋，也担心你把恢复睡眠的时间再次交了出去。" : "父母无意间看见你在竞赛群里聊到很晚。他们分不清讨论题目和闲聊的界线，只看见第二天早晨你仍然起不来。"],
+    ["培训返程时的一袋水果", "父母没有进教室，只在车站把水果和换洗衣服塞进你的包里。问起模考时，他们努力把语气放得像普通问候。"],
+    ["父母试做的一道题", "父母从你摊开的卷子里挑了一道题，读到一半就放弃了。那一点笨拙没有解决任何问题，却让‘你怎么还没学完’少出现了一次。"],
+  ] as const;
+  const [title, body] = scenes[hashSeed(`${seed}-family-scene-${targetWeek}`) % scenes.length];
+  const positive = preparingForNational || stats.familySupport >= 48;
+  return {
+    id,
+    phase: "weekly",
+    label: "家庭生活",
+    title,
+    body: [body, `${profile.label}的家庭更倾向于：${profile.note}`],
+    concealConsequences: true,
+    visualNovel: true,
+    trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
+    choices: [
+      {
+        id: `family-talk-${targetWeek}`,
+        title: "把最近的真实状态讲清楚，也承认自己还没有答案",
+        preview: "这次谈话会被记住。",
+        result: "谈话没有消灭分歧，却让支持不再只由下一张成绩单决定。",
+        effects: { familySupport: positive ? 2 : 1.2, san: 1, mindset: 0.5, tags: ["与父母认真沟通"] },
+      },
+      {
+        id: `family-plan-${targetWeek}`,
+        title: "拿出训练与常规计划，约定下一次复盘节点",
+        preview: "这次谈话会被记住。",
+        result: "你们把担心变成了可以复查的边界。计划未必完全执行，但争执第一次不再无限延长。",
+        effects: { familySupport: 1.5, academics: 2, san: -0.5, tags: ["家庭共同计划"] },
+      },
+      {
+        id: `family-avoid-${targetWeek}`,
+        title: "说自己很累，今晚先不谈",
+        preview: "这次谈话会被记住。",
+        result: "父母没有继续追问。暂停保护了今晚，也把没有解决的问题留到了以后。",
+        effects: { san: 1.8, familySupport: profile.key === "anxious" ? -0.8 : -0.2 },
+      },
+    ],
+  };
+}
+
+function makeFamilyCheckpointEvent(
+  targetWeek: number,
+  seed: string,
+  profile: (typeof familyProfiles)[number],
+  stats: PlayerStats,
+  storyTags: string[],
+  resolvedEvents: string[],
+  calendar: ReturnType<typeof calendarFor>,
+): GameEvent | null {
+  const checkpoints = [
+    { week: 9, key: "first-meeting", phase: "第一次家校沟通" },
+    { week: 27, key: "winter-training", phase: "第一次寒假外培前" },
+    { week: calendar.firstExamWeek - 2, key: "province-one", phase: "第一次联赛前" },
+    ...(storyTags.includes("第1次省赛-进入省队")
+      ? [{ week: calendar.firstNationalWeek - 3, key: "national-one", phase: "第一次国赛备考中段" }]
+      : []),
+    { week: calendar.formalLeaveWeek - 1, key: "formal-leave", phase: "正式停课前" },
+    { week: calendar.secondExamWeek - 2, key: "province-two", phase: "第二次联赛前" },
+    ...(storyTags.includes("第2次省赛-进入省队")
+      ? [{ week: calendar.secondNationalWeek - 3, key: "national-two", phase: "第二次国赛备考中段" }]
+      : []),
+  ];
+  const checkpoint = checkpoints.find((item) => item.week === targetWeek);
+  if (!checkpoint) return null;
+  const id = `family-checkpoint-${checkpoint.key}`;
+  if (resolvedEvents.includes(id)) return null;
+  const enteredNational =
+    (targetWeek > calendar.firstExamWeek &&
+      targetWeek <= calendar.firstNationalWeek &&
+      storyTags.includes("第1次省赛-进入省队")) ||
+    (targetWeek > calendar.secondExamWeek &&
+      targetWeek <= calendar.secondNationalWeek &&
+      storyTags.includes("第2次省赛-进入省队"));
+  const hasRelationship = storyTags.some(
+    (tag) => tag.includes("正式恋爱") || tag.includes("确认挚友"),
+  );
+  const lowTrust = stats.familySupport < 38;
+  const bodies: Record<string, string> = {
+    "first-meeting":
+      "班主任、竞赛教练和父母第一次坐在同一张桌边。三个人说的都是‘为你好’，却分别指向常规排名、竞赛进度和睡眠。",
+    "winter-training":
+      "两周外培的日程、住宿和返程票摊在桌上。培训费用不从你的零花钱里出，但这仍是一笔需要全家共同承担的时间。",
+    "province-one":
+      "离第一次联赛只剩两周。父母没有能力判断你的知识漏洞，只能从模拟排名、黑眼圈和情绪猜测这次投入是否值得。",
+    "national-one":
+      "国赛备考已经过半。父母不再追问是否立刻退赛，而是拿着机构日程逐项确认住宿、实验安全和每天能睡多久。",
+    "formal-leave":
+      "正式停课申请需要家长签字。签名意味着接受常规成绩继续下滑，也意味着不再把每一次焦虑都伪装成‘再考虑一下’。",
+    "province-two":
+      "第二次、也是最后一次联赛机会就在眼前。家里都清楚这张成绩单之后，不会再有‘下一年重新来过’。",
+    "national-two":
+      "最后一段国赛备考让全家的时间都跟着机构日程移动。此时争论的重点已经不是要不要学，而是如何别在抵达赛场前先被耗空。",
+  };
+  return {
+    id,
+    phase: "weekly",
+    label: `家庭节点 · ${checkpoint.phase}`,
+    title: lowTrust ? "这次谈话从追问开始。" : "家里把这一阶段的问题重新摆到桌面。",
+    body: [
+      bodies[checkpoint.key],
+      enteredNational
+        ? "进入省队后，家里已经很少再谈立刻退赛；他们更关心实验安全、睡眠和国赛之后的选择。"
+        : `${profile.label}的反应方式仍在影响谈话：${profile.note}`,
+      hasRelationship
+        ? "父母也注意到你和某位同学来往得更密切。那段关系究竟是支撑还是新的压力，暂时没有人能替你回答。"
+        : "这不是一次只讨论成绩的会议，作息、人际关系和你是否仍然愿意继续也被问到了。",
+    ],
+    concealConsequences: true,
+    visualNovel: true,
+    trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
+    choices: [
+      {
+        id: `family-checkpoint-honest-${checkpoint.key}`,
+        title: "把真实进度、常规缺口和最坏打算一起讲清楚",
+        preview: "坦白会改变之后的家庭氛围。",
+        result: "你没有保证拿奖，只解释了自己为何继续、何时复盘、出现什么情况会停下。父母未必完全放心，但不再只能靠猜测判断你。",
+        effects: { familySupport: enteredNational ? 2.4 : 1.6, san: 0.8, mindset: 0.5, tags: ["家庭节点坦白沟通"] },
+      },
+      {
+        id: `family-checkpoint-promise-${checkpoint.key}`,
+        title: "许诺下一次一定用成绩证明自己",
+        preview: "承诺会被记住。",
+        result: "一句‘一定’暂时终止了争论，也把原本属于试卷的随机性变成了你对家里的债。",
+        effects: { familySupport: 2.2, san: -1.2, mindset: -1, tags: ["向父母许下结果承诺"] },
+      },
+      {
+        id: `family-checkpoint-boundary-${checkpoint.key}`,
+        title: "先划清边界：今晚不接受用别人家的孩子比较",
+        preview: "拒绝比较并不等于谈话没有代价。",
+        result: "你终止了最伤人的比较，也让谈话在没有结论时结束。那条边界保护了你，但父母的不安仍会流向下一次成绩。",
+        effects: {
+          familySupport: profile.key === "open" ? -0.4 : -1.4 * profile.volatility,
+          san: 1.4,
+          mindset: 0.5,
+          tags: ["在家庭谈话中划清边界"],
+        },
+      },
+    ],
+  };
+}
+
+function makeExternalDepartureEvent(
+  targetWeek: number,
+  seed: string,
+  retiredRivalIds: string[],
+  resolvedEvents: string[],
+): GameEvent | null {
+  if (targetWeek < 24 || targetWeek % 11 !== hashSeed(`${seed}-external-retire-rhythm`) % 11)
+    return null;
+  if (seededUnit(`${seed}-external-retire-trigger-${targetWeek}`) > 0.42)
+    return null;
+  const candidates = rivals.filter(
+    (rival) =>
+      rival.scope === "province" &&
+      rival.revealWeek <= targetWeek &&
+      !retiredRivalIds.includes(rival.id),
+  );
+  if (!candidates.length) return null;
+  const rival = candidates[hashSeed(`${seed}-external-retire-rival-${targetWeek}`) % candidates.length];
+  const id = `external-departure-${rival.id}-${targetWeek}`;
+  if (resolvedEvents.includes(id)) return null;
+  const scenes = [
+    `省联考群里，${rival.name}把昵称后的学校与年级一起删掉，只留下一句“之后不参加排名了”。`,
+    `一张新的机构模考榜发出来，你翻了两遍也没找到${rival.name}。后来才从共同认识的人那里听说TA已经回班。`,
+    `${rival.name}所在学校更换了负责教练，原有训练突然中断。TA没有转学，只能先把竞赛从日程里移走。`,
+    `省内交流群转发了${rival.name}的退赛说明：家里决定优先处理健康与睡眠，所有培训暂停。`,
+    `你曾把${rival.name}当作稳定的省队线参照。一次政策讨论后，TA却比任何人都快地选择了另一条升学路线。`,
+    `${rival.name}没有公开宣布退赛，只是不再参加任何一场联考。几周以后，旧榜单上的名字才显出一种过去时。`,
+    `机构老师在课前说${rival.name}以后不来了。不同学校的人沉默几秒，随即又被下一张幻灯片推着向前。`,
+    `共同朋友告诉你，${rival.name}的常规考试重新回到年级前列。这个消息既不像失败，也不像胜利。`,
+    `${rival.name}转去准备另一门竞赛。省内对手少了一个，现实中的TA却并没有因此停在原地。`,
+    `联赛结果之后，${rival.name}退出了几个模考群，却保留了好友。TA说不想再被排名看见，但仍愿意偶尔聊题。`,
+  ];
+  return {
+    id,
+    phase: "weekly",
+    label: "省内消息",
+    title: "一个熟悉的外校名字从下一张榜单上消失了。",
+    body: [scenes[hashSeed(`${seed}-external-retire-copy-${targetWeek}`) % scenes.length], "这不会改变本校在队人数，却会改变你对全省竞争与个人去留的想象。"],
+    concealConsequences: true,
+    visualNovel: true,
+    trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
+    choices: [
+      { id: `external-wish-${rival.id}`, title: "通过共同好友转达祝福", preview: "结果稍后揭晓。", result: "消息绕了一圈送到对方那里。你们不熟，却都知道离开赛场不等于从所有人的记忆里消失。", effects: { san: -0.5, mindset: 0.5 } },
+      { id: `external-recalculate-${rival.id}`, title: "重新评估今年省内竞争", preview: "结果稍后揭晓。", result: "少一个强手不等于自己的题会更容易。你更新了对手表，也提醒自己不要把别人的退赛当成奖励。", effects: { reasoning: 0.3, mindset: -0.2 } },
     ],
   };
 }
@@ -4034,6 +5056,7 @@ export default function Home() {
   const [retirementAttemptCount, setRetirementAttemptCount] = useState(0);
   const [activeTeamSize, setActiveTeamSize] = useState(0);
   const [retiredRivalIds, setRetiredRivalIds] = useState<string[]>([]);
+  const [retiredRivalWeeks, setRetiredRivalWeeks] = useState<Record<string, number>>({});
   const [rivalRelationships, setRivalRelationships] = useState<
     Record<string, RivalRelationship>
   >({});
@@ -4066,9 +5089,12 @@ export default function Home() {
     Record<string, string>
   >({});
   const [achievementOpen, setAchievementOpen] = useState(false);
+  const [selectedAchievementId, setSelectedAchievementId] = useState<string | null>(null);
   const [achievementToast, setAchievementToast] =
     useState<AchievementDefinition | null>(null);
   const [achievementHydrated, setAchievementHydrated] = useState(false);
+  const [endingArchive, setEndingArchive] = useState<EndingArchiveRecord[]>([]);
+  const [endingArchiveOpen, setEndingArchiveOpen] = useState(false);
 
   const selected = origins.find((origin) => origin.id === selectedId) ?? origins[0];
 
@@ -4091,7 +5117,12 @@ export default function Home() {
     return {
       firstYear,
       school: schoolNames[schoolIndex],
-      schoolTeamSize: 12 + ((base >>> 9) % 9),
+      schoolTeamSize:
+        selected.id === "elite-school"
+          ? 18 + ((base >>> 9) % 7)
+          : selected.id === "county-school"
+            ? 6 + ((base >>> 9) % 7)
+            : 10 + ((base >>> 9) % 11),
       schoolParticipants: 620 + ((base >>> 13) % 481),
       schoolAcademicStrength:
         selected.id === "elite-school"
@@ -4103,6 +5134,7 @@ export default function Home() {
               : 0.59,
       coreSameGrade: 30 + ((base >>> 11) % 16),
       coreUpperGrade: 30 + ((base >>> 15) % 16),
+      coreLowerGrade: 30 + ((base >>> 18) % 16),
       previousGolds,
       teamPlaces: 12 + previousGolds,
       provinceParticipants: 1050 + ((base >>> 6) % 451),
@@ -4116,6 +5148,10 @@ export default function Home() {
         90,
       ),
       familySupport: supportLabels[supportIndex],
+      familyProfile:
+        familyProfiles[
+          (base >>> 25) % familyProfiles.length
+        ],
       paperSetter: firstYear % 2 === 1 ? "思辨倾向命题年" : "基础倾向命题年",
     };
   }, [seed, selected]);
@@ -4125,6 +5161,7 @@ export default function Home() {
   // v2 discards the old draft-rank based provincial achievements that could be
   // unlocked before the official team line was published.
   const achievementKey = "shengjing-rensheng-achievements-v2";
+  const endingArchiveKey = "shengjing-rensheng-ending-archive-v1";
   const manualSaveKeys = Array.from({ length: 10 }, (_, index) =>
     index === 0 ? saveKey : `shengjing-rensheng-save-v1-slot-${index + 1}`,
   );
@@ -4169,6 +5206,7 @@ export default function Home() {
     retirementAttemptCount,
     activeTeamSize,
     retiredRivalIds,
+    retiredRivalWeeks,
     rivalRelationships,
     inventory,
     keepsakes,
@@ -4291,11 +5329,35 @@ export default function Home() {
       setCurrentWeekUseWeek(data.currentWeekUseWeek ?? data.week ?? 1);
       setChocolateStreak(data.chocolateStreak ?? 0);
       setLastChocolateWeek(data.lastChocolateWeek ?? 0);
-      setPendingAssessment(data.pendingAssessment ?? null);
+      const loadedPendingAssessment = data.pendingAssessment?.provincialAttempt
+        ? (() => {
+            const migrated = normalizeProvincialAttemptScoreScale(
+              data.pendingAssessment.provincialAttempt,
+            );
+            return {
+              ...data.pendingAssessment,
+              provincialAttempt: migrated,
+              subjects: migrated.breakdown.map((section) => ({
+                name: section.name,
+                score: section.score,
+                maxScore: section.maxScore,
+                note: `回忆正确 ${section.correct}/${section.total} · 得分率 ${formatNumber(section.rate)}%`,
+              })),
+            };
+          })()
+        : (data.pendingAssessment ?? null);
+      setPendingAssessment(loadedPendingAssessment);
       setAssessmentChoice(data.assessmentChoice ?? null);
       setQueuedEvent(data.queuedEvent ?? null);
-      setProvincialAttempts(data.provincialAttempts ?? []);
-      setNationalAttempts(data.nationalAttempts ?? []);
+      setProvincialAttempts(
+        (data.provincialAttempts ?? []).map(normalizeProvincialAttemptScoreScale),
+      );
+      setNationalAttempts(
+        (data.nationalAttempts ?? []).map((attempt: NationalAttempt) => ({
+          ...attempt,
+          namedResults: attempt.namedResults ?? [],
+        })),
+      );
       const loadedTags: string[] = data.storyTags ?? [];
       const secondAttemptFinishedOutsideTeam =
         loadedTags.includes("第2次省赛-最终名单确认") &&
@@ -4316,7 +5378,12 @@ export default function Home() {
       setRetirementCooldownUntil(data.retirementCooldownUntil ?? 0);
       setRetirementAttemptCount(data.retirementAttemptCount ?? 0);
       setActiveTeamSize(data.activeTeamSize ?? 0);
-      setRetiredRivalIds(data.retiredRivalIds ?? []);
+      const restoredRetiredIds: string[] = data.retiredRivalIds ?? [];
+      setRetiredRivalIds(restoredRetiredIds);
+      setRetiredRivalWeeks(
+        data.retiredRivalWeeks ??
+          Object.fromEntries(restoredRetiredIds.map((rivalId) => [rivalId, data.week ?? 1])),
+      );
       setRivalRelationships(
         Object.fromEntries(
           rivals
@@ -4369,8 +5436,40 @@ export default function Home() {
     } catch {
       // 成就元数据损坏时从空记录开始，不影响主存档。
     }
+    try {
+      const rawArchive = window.localStorage.getItem(endingArchiveKey);
+      if (rawArchive) setEndingArchive(JSON.parse(rawArchive));
+    } catch {
+      // 档案损坏不影响当前游戏。
+    }
     setAchievementHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (screen !== "postcareer" || postCareerState?.stage !== "ending" || !postCareerState.ending)
+      return;
+    const id = `${seed}-${postCareerState.ending.subtitle}-${postCareerState.admission?.school ?? "none"}`;
+    setEndingArchive((current) => {
+      if (current.some((record) => record.id === id)) return current;
+      const next = [
+        {
+          id,
+          seed,
+          name,
+          endingTitle: postCareerState.ending!.subtitle,
+          futureTitle: postCareerState.ending!.futureTitle,
+          admission: postCareerState.admission?.school,
+          route: postCareerState.admission?.routeLabel,
+          gaokao: postCareerState.gaokao?.total,
+          nationalRank: postCareerInput?.nationalRank,
+          recordedAt: new Date().toISOString(),
+        },
+        ...current,
+      ].slice(0, 60);
+      window.localStorage.setItem(endingArchiveKey, JSON.stringify(next));
+      return next;
+    });
+  }, [screen, postCareerState, postCareerInput, seed, name]);
 
   useEffect(() => {
     if (!achievementHydrated) return;
@@ -4476,7 +5575,7 @@ export default function Home() {
     if (!unlocked) return;
     setUnlockedAchievements((current) => ({
       ...current,
-      [unlocked.id]: new Date().toISOString(),
+      [unlocked.id]: `${new Date().toISOString()}|${week}`,
     }));
     setAchievementToast(unlocked);
   }, [
@@ -4595,6 +5694,7 @@ export default function Home() {
     setRetirementAttemptCount(0);
     setActiveTeamSize(generated.schoolTeamSize);
     setRetiredRivalIds([]);
+    setRetiredRivalWeeks({});
     setKeepsakes({});
     setKeepsakeOpen(false);
     setSelectedKeepsakeId(null);
@@ -4744,8 +5844,8 @@ export default function Home() {
     const reward = newlyUnlocked.reduce<GameEffect>((total, keepsake) => {
       Object.entries(keepsake.reward ?? {}).forEach(([key, value]) => {
         if (typeof value !== "number") return;
-        const effectKey = key as keyof GameEffect;
-        total[effectKey] = ((total[effectKey] as number | undefined) ?? 0) + value;
+        const numericEffects = total as Record<string, number | undefined>;
+        numericEffects[key] = (numericEffects[key] ?? 0) + value;
       });
       return total;
     }, {});
@@ -4864,10 +5964,13 @@ export default function Home() {
       setStoreNotice("本周从补给中获得的额外行动点已经达到上限。再喝只会增加负担。");
       return;
     }
-    setInventory((current) => ({
-      ...current,
-      [item.id]: Math.max(0, (current[item.id] ?? 0) - 1),
-    }));
+    setInventory((current) => {
+      const next = { ...current };
+      const remaining = Math.max(0, (current[item.id] ?? 0) - 1);
+      if (remaining === 0) delete next[item.id];
+      else next[item.id] = remaining;
+      return next;
+    });
     setPlayerStats(applyEffects(playerStats, item.effects ?? {}));
     if (item.bonusActionPoints) {
       setWeeklyBonusPoints((current) =>
@@ -4977,19 +6080,19 @@ export default function Home() {
     {
       id: "small",
       amount: 30,
-      baseSupportCost: 1.5,
+      baseSupportCost: 3,
       title: "只要三十元，买点零食和咖啡",
     },
     {
       id: "medium",
       amount: 80,
-      baseSupportCost: 4,
+      baseSupportCost: 6,
       title: "要八十元，补充一周零花钱",
     },
     {
       id: "large",
       amount: 150,
-      baseSupportCost: 7,
+      baseSupportCost: 10,
       title: "要一百五十元，解释最近确实需要",
     },
   ];
@@ -4998,9 +6101,7 @@ export default function Home() {
     option: (typeof allowanceOptions)[number],
     stats: PlayerStats,
   ) => {
-    const repetitionMultiplier = 1 + allowanceRequestCount * 0.35;
-    const originCostFactor =
-      selected.id === "wealthy-family" ? 0.7 : selected.id === "coach-family" ? 1.2 : 1;
+    const repetitionMultiplier = Math.min(1.8, 1 + allowanceRequestCount * 0.1);
     const originChance =
       selected.id === "wealthy-family"
         ? 0.14
@@ -5010,10 +6111,11 @@ export default function Home() {
             ? -0.05
             : 0;
     return {
-      supportCost: round1(option.baseSupportCost * repetitionMultiplier * originCostFactor),
+      supportCost: round1(option.baseSupportCost * repetitionMultiplier),
       successChance: clamp(
         0.38 + stats.familySupport / 130 - option.amount / 520 -
-          allowanceRequestCount * 0.06 + originChance,
+          allowanceRequestCount * 0.06 + originChance +
+          (1 - generated.familyProfile.moneyFactor) * 0.08,
         0.15,
         0.94,
       ),
@@ -5037,7 +6139,7 @@ export default function Home() {
     setPlayerStats(
       applyEffects(playerStats, {
         pocketMoney: succeeded ? option.amount : 0,
-        familySupport: succeeded ? -supportCost : -supportCost * 0.5,
+        familySupport: succeeded ? -supportCost : -supportCost * 0.4,
         san: succeeded ? 0.5 : -1.5,
         mindset: succeeded ? 0 : -0.5,
       }),
@@ -5140,6 +6242,34 @@ export default function Home() {
     )
       ? 0
       : playerStats.competitionNeglectWeeks + 1;
+    const isNationalPreparationWeek =
+      (storyTags.includes("第1次省赛-进入省队") &&
+        week > calendar.firstExamWeek &&
+        week <= calendar.firstNationalWeek) ||
+      (storyTags.includes("第2次省赛-进入省队") &&
+        week > calendar.secondExamWeek &&
+        week <= calendar.secondNationalWeek);
+    if (
+      !isNationalPreparationWeek &&
+      week % 2 === 0 &&
+      nextStats.regularNeglectWeeks >= 4
+    ) {
+      const regularTrustLoss =
+        (generated.familyProfile.key === "anxious" ? 0.55 : 0.35) *
+        generated.familyProfile.volatility;
+      nextStats.familySupport = round1(
+        clamp(nextStats.familySupport - regularTrustLoss),
+      );
+    }
+    if (
+      week % 3 === 0 &&
+      nextStats.competitionNeglectWeeks >= 4 &&
+      ["anxious", "results"].includes(generated.familyProfile.key)
+    ) {
+      nextStats.familySupport = round1(
+        clamp(nextStats.familySupport - 0.35 * generated.familyProfile.volatility),
+      );
+    }
     const slackCount = schedule.filter(
       (action) => action.id === "slack-off",
     ).length;
@@ -5307,6 +6437,14 @@ export default function Home() {
         ),
       ]),
     );
+    const relationshipMood = relationshipWeeklyMoodEffect(
+      nextRelationships,
+      week + 1,
+    );
+    if (relationshipMood !== 0) {
+      nextStats.mindset = round1(clamp(nextStats.mindset + relationshipMood));
+      effects.mindset = round1((effects.mindset ?? 0) + relationshipMood);
+    }
     setRivalRelationships(nextRelationships);
     const changes = effectLabels
       .filter(([key]) => !key.startsWith("module"))
@@ -5346,9 +6484,23 @@ export default function Home() {
     setWeekRecords((current) => [...current, completedWeekRecord]);
     setPendingWeekReview(completedWeekRecord);
     setCurrentWeekMoments([]);
+    const namedExamRivals: NamedExamRivalContext[] = [
+      ...rivals.map((rival) => ({
+        rival,
+        name: seededRivalIdentity(rival, seed).name,
+        retiredWeek: retiredRivalWeeks[rival.id],
+        knownAtExam:
+          week >= rival.revealWeek && nextStats.social >= rival.revealSocial,
+      })),
+      ...generatedCoreRivalContexts(seed, week, nextStats.social, {
+        同届: generated.coreSameGrade,
+        上届: generated.coreUpperGrade,
+        下届: generated.coreLowerGrade,
+      }),
+    ];
     let provincialAttempt: ProvincialAttempt | undefined;
     let nextAttempts = provincialAttempts;
-    if (assessmentItem?.assessment?.title.includes("联赛")) {
+    if (assessmentItem?.assessment?.title === "全国中学生生物学联赛") {
       const attemptNumber: 1 | 2 =
         week === calendar.firstExamWeek ? 1 : 2;
       provincialAttempt = simulateProvincialExam(
@@ -5357,6 +6509,8 @@ export default function Home() {
         week,
         attemptNumber,
         generated,
+        keepsakes["fantasy-archive-badge"] ? 1 : 0,
+        namedExamRivals,
       );
       nextAttempts = [
         ...provincialAttempts.filter(
@@ -5380,6 +6534,11 @@ export default function Home() {
         seed,
         week,
         attemptNumber,
+        keepsakes["fantasy-archive-badge"] ? 1 : 0,
+        namedExamRivals,
+        nextAttempts.find(
+          (attempt) => attempt.attemptNumber === attemptNumber,
+        ),
       );
       nationalStage = "theory";
       nextNationalAttempts = [
@@ -5407,7 +6566,7 @@ export default function Home() {
       nextCalendar,
       storyTags,
     );
-    const milestone = findMilestoneEvent(
+    let milestone = findMilestoneEvent(
       week + 1,
       nextCalendar,
       resolvedEvents,
@@ -5416,6 +6575,13 @@ export default function Home() {
       storyTags,
       seed,
     );
+    // 正式联赛的赛后选择，以及国赛理论出分后的实验/休息/颁奖，
+    // 都在本次考试所在周连续处理，不再人为隔成后续数周。
+    if (provincialAttempt) {
+      milestone = makePostExamRouteEvent(provincialAttempt.attemptNumber);
+    } else if (nationalAttempt && nationalStage === "theory") {
+      milestone = makeTheoryNightEvent(nationalAttempt);
+    }
     const randomEvent = findWeeklyEvent(
       week + 1,
       nextStats,
@@ -5424,7 +6590,9 @@ export default function Home() {
       storyTags,
       nextCounts,
       nextWeekPhaseForEvents.isTraining,
+      retiredRivalIds,
     );
+    const nextStoryTags = [...new Set([...storyTags, ...weeklyTags])];
     const teammateDeparture = makeTeammateDepartureEvent(
       week + 1,
       seed,
@@ -5432,8 +6600,32 @@ export default function Home() {
       generated.schoolTeamSize,
       retiredRivalIds,
       nextCalendar,
+      nextRelationships,
+      nextStoryTags,
     );
-    const nextStoryTags = [...new Set([...storyTags, ...weeklyTags])];
+    const familyEvent = makeFamilyWeeklyEvent(
+      week + 1,
+      seed,
+      generated.familyProfile,
+      nextStats,
+      nextStoryTags,
+      resolvedEvents,
+    );
+    const familyCheckpoint = makeFamilyCheckpointEvent(
+      week + 1,
+      seed,
+      generated.familyProfile,
+      nextStats,
+      nextStoryTags,
+      resolvedEvents,
+      nextCalendar,
+    );
+    const externalDeparture = makeExternalDepartureEvent(
+      week + 1,
+      seed,
+      retiredRivalIds,
+      resolvedEvents,
+    );
     const nextWeeksToProvincial = [
       nextCalendar.firstExamWeek,
       nextCalendar.secondExamWeek,
@@ -5576,12 +6768,12 @@ export default function Home() {
         : relationshipDaily ?? personalityDaily);
     const storylineEvent =
       (week + 1) % 3 === 0
-        ? fantasyStory ?? relationshipEvent ?? achievementStory
+        ? fantasyStory ?? relationshipEvent ?? familyEvent ?? externalDeparture ?? achievementStory
         : (week + 1) % 3 === 1
-          ? relationshipEvent ?? achievementStory ?? fantasyStory
-          : achievementStory ?? fantasyStory ?? relationshipEvent;
+          ? relationshipEvent ?? familyEvent ?? externalDeparture ?? achievementStory ?? fantasyStory
+          : familyEvent ?? externalDeparture ?? achievementStory ?? fantasyStory ?? relationshipEvent;
     const nextEvent =
-      milestone ?? teammateDeparture ?? storylineEvent ?? randomEvent;
+      milestone ?? familyCheckpoint ?? teammateDeparture ?? storylineEvent ?? randomEvent;
     if (
       !retirementFlow &&
       week + 1 >= retirementCooldownUntil &&
@@ -5600,6 +6792,11 @@ export default function Home() {
         "省三等奖",
         "未获奖",
       ].some((award) => storyTags.includes(`第1次省赛-${award}`));
+      const preparingForNational =
+        (storyTags.includes("第1次省赛-进入省队") &&
+          week + 1 <= nextCalendar.firstNationalWeek) ||
+        (storyTags.includes("第2次省赛-进入省队") &&
+          week + 1 <= nextCalendar.secondNationalWeek);
       const coachPressureChance =
         nextStats.coachFavor <= -18 && moduleAverage < 58
           ? 0.58
@@ -5612,8 +6809,9 @@ export default function Home() {
                 moduleAverage < 32
               ? 0.16
               : 0;
-      const familyPressureChance =
-        nextStats.familySupport <= 24
+      const familyPressureChance = preparingForNational
+        ? 0
+        : nextStats.familySupport <= 24
           ? 0.64
           : nextStats.familySupport < 42 && regularRate < 0.5
             ? 0.4
@@ -5698,27 +6896,70 @@ export default function Home() {
     if (pendingAssessment.type === "school" && pendingAssessment.totalScore) {
       familyResult =
         pendingAssessment.totalScore >= 650
-          ? 2.5
-          : pendingAssessment.totalScore >= 580
-            ? 1.2
-            : pendingAssessment.totalScore < 430
-              ? -1.5
-              : 0;
+          ? 3
+          : pendingAssessment.totalScore >= 600
+            ? 1.8
+            : pendingAssessment.totalScore >= 560
+              ? 0.8
+              : pendingAssessment.totalScore >= 500
+                ? 0
+                : pendingAssessment.totalScore >= 450
+                  ? -0.8
+                  : -2;
     } else if (pendingAssessment.provincialAttempt) {
+      const estimated = provincialScoreRate(
+        pendingAssessment.provincialAttempt.estimateHigh,
+      );
       familyResult =
-        pendingAssessment.provincialAttempt.estimateHigh >= 65 ? 1.5 : 0;
+        estimated >= 65
+          ? 2
+          : estimated >= 58
+            ? 0.5
+            : estimated >= 48
+              ? 0
+              : estimated >= 40
+                ? -0.8
+                : -1.8;
     } else if (
-      pendingAssessment.nationalAttempt?.qualifiedForExperiment
+      pendingAssessment.nationalAttempt &&
+      pendingAssessment.nationalStage === "theory"
     ) {
-      familyResult = 3;
+      familyResult = pendingAssessment.nationalAttempt.qualifiedForExperiment
+        ? 3
+        : -0.8;
     } else if (
-      pendingAssessment.type === "competition" &&
-      pendingAssessment.rank <= pendingAssessment.participants * 0.2
+      pendingAssessment.nationalAttempt &&
+      pendingAssessment.nationalStage === "experiment"
     ) {
-      familyResult = 0.8;
+      familyResult =
+        pendingAssessment.nationalAttempt.medal === "金牌"
+          ? 4
+          : pendingAssessment.nationalAttempt.medal === "银牌"
+            ? 2
+            : 0.5;
+    } else if (
+      pendingAssessment.type === "competition"
+    ) {
+      const percentile =
+        pendingAssessment.rank / Math.max(1, pendingAssessment.participants);
+      familyResult =
+        percentile <= 0.15
+          ? 1.2
+          : percentile <= 0.35
+            ? 0.4
+            : percentile <= 0.55
+              ? 0
+              : percentile <= 0.75
+                ? -0.5
+                : -1.2;
     }
+    const familyAdjustedResult =
+      familyResult < 0
+        ? familyResult * generated.familyProfile.volatility
+        : familyResult *
+          (generated.familyProfile.key === "results" ? 1.15 : 1);
     effects.familySupport = round1(
-      (effects.familySupport ?? 0) + familyResult,
+      (effects.familySupport ?? 0) + familyAdjustedResult,
     );
     if (pendingAssessment.type === "competition") {
       const percentile =
@@ -5816,7 +7057,20 @@ export default function Home() {
       choice.effects,
       seed,
       playerStats,
+      rivalRelationships,
     );
+    if (
+      pendingEvent.id.startsWith("provincial-") &&
+      pendingEvent.id.endsWith("-official-result") &&
+      typeof resolvedEffects.familySupport === "number"
+    ) {
+      resolvedEffects.familySupport = round1(
+        resolvedEffects.familySupport < 0
+          ? resolvedEffects.familySupport * generated.familyProfile.volatility
+          : resolvedEffects.familySupport *
+            (generated.familyProfile.key === "results" ? 1.15 : 1),
+      );
+    }
     const nextStats = applyEffects(playerStats, resolvedEffects);
     nextStats.bookStudy = Object.fromEntries(
       Object.entries(nextStats.bookStudy).map(([bookId, state]) => [
@@ -5856,7 +7110,11 @@ export default function Home() {
           if (attempt.attemptNumber !== attemptNumber) return attempt;
           const appealed = storyTags.includes(`第${attemptNumber}次省赛-提交申诉`);
           const finalScore = round1(
-            clamp(attempt.draftScore + (appealed ? attempt.appealDelta : 0)),
+            clamp(
+              attempt.draftScore + (appealed ? attempt.appealDelta : 0),
+              0,
+              PROVINCIAL_MAX_SCORE,
+            ),
           );
           const finalRank = rankAgainst(attempt.competitorScores, finalScore);
           return {
@@ -5887,6 +7145,14 @@ export default function Home() {
         const peerChange = resolvedEffects.peerFavor ?? 0;
         const storyUpdated = applyRelationshipChoice(previous, choice.id, week);
         const isDedicatedStory = pendingEvent.id.startsWith("bondstory-");
+        const isCompetitiveEncounter = /竞争|模考|排名|榜/.test(
+          `${pendingEvent.label}${pendingEvent.title}`,
+        );
+        const competitionTension = isCompetitiveEncounter
+          ? peerChange >= 0
+            ? 0.7
+            : 1.8
+          : 0;
         return {
           ...current,
           [involvedRival.id]: {
@@ -5900,7 +7166,8 @@ export default function Home() {
             tension: round1(
               clamp(
                 storyUpdated.tension +
-                  (isDedicatedStory ? 0 : Math.max(0, -peerChange) * 2),
+                  (isDedicatedStory ? 0 : Math.max(0, -peerChange) * 2) +
+                  competitionTension,
               ),
             ),
             romance: round1(clamp(storyUpdated.romance)),
@@ -5930,15 +7197,28 @@ export default function Home() {
       const rivalId = pendingEvent.id
         .replace("teammate-departure-", "")
         .replace(/-\d+$/, "");
-      setActiveTeamSize((current) => Math.max(0, current - 1));
-      setRetiredRivalIds((current) => [...new Set([...current, rivalId])]);
+      const persuadedBack = choice.id.startsWith("departure-persuade-success-");
+      if (!persuadedBack) {
+        setActiveTeamSize((current) => Math.max(0, current - 1));
+        setRetiredRivalIds((current) => [...new Set([...current, rivalId])]);
+        setRetiredRivalWeeks((current) => ({ ...current, [rivalId]: week }));
+      }
     }
     if (pendingEvent.id.startsWith("teammate-wave-")) {
       const leaving = Number(pendingEvent.id.split("-")[2]) || 2;
       setActiveTeamSize((current) => Math.max(1, current - leaving));
       setRetiredRivalIds((current) => {
         const available = rivals
-          .filter((rival) => rival.scope.startsWith("school") && !current.includes(rival.id))
+          .filter((rival) => {
+            if (!rival.scope.startsWith("school") || current.includes(rival.id))
+              return false;
+            const relation = normalizeRelationship(
+              rivalRelationships[rival.id],
+              seed,
+              rival.id,
+            );
+            return !["dating", "crush"].includes(relation.route);
+          })
           .sort(
             (a, b) =>
               hashSeed(`${seed}-${pendingEvent.id}-${a.id}`) -
@@ -5946,8 +7226,19 @@ export default function Home() {
           )
           .slice(0, leaving)
           .map((rival) => rival.id);
+        setRetiredRivalWeeks((weeks) => ({
+          ...weeks,
+          ...Object.fromEntries(available.map((rivalId) => [rivalId, week])),
+        }));
         return [...new Set([...current, ...available])];
       });
+    }
+    if (pendingEvent.id.startsWith("external-departure-")) {
+      const rivalId = pendingEvent.id
+        .replace("external-departure-", "")
+        .replace(/-\d+$/, "");
+      setRetiredRivalIds((current) => [...new Set([...current, rivalId])]);
+      setRetiredRivalWeeks((current) => ({ ...current, [rivalId]: week }));
     }
     setResolvedEvents((current) => [...current, pendingEvent.id]);
     setCurrentWeekMoments((current) => [
@@ -5968,11 +7259,32 @@ export default function Home() {
       });
       setRetirementChoice(null);
     }
+    let chainedEvent: GameEvent | undefined;
+    const nationalChainMatch = pendingEvent.id.match(/^national-([12])-(theory-night|experiment-day|rest-day)$/);
+    if (nationalChainMatch) {
+      const attemptNumber = Number(nationalChainMatch[1]) as 1 | 2;
+      const attempt = nationalAttempts.find(
+        (item) => item.attemptNumber === attemptNumber,
+      );
+      if (attempt) {
+        const stage = nationalChainMatch[2];
+        chainedEvent =
+          stage === "theory-night"
+            ? attempt.qualifiedForExperiment
+              ? makeNationalExperimentEvent(attempt)
+              : makeNationalRestEvent(attempt)
+            : stage === "experiment-day"
+              ? makeNationalRestEvent(attempt)
+              : makeNationalAwardEvent(attempt);
+      }
+    }
     setEventResultNotice({
       title: pendingEvent.title,
       choice: choice.title,
       result: choice.result,
-      ...(pendingEvent.id === "national-2-award"
+      ...(chainedEvent
+        ? { nextAction: { type: "continue-event", event: chainedEvent } as const }
+        : pendingEvent.id === "national-2-award"
         ? { nextAction: { type: "national-finish" } as const }
         : {}),
     });
@@ -6069,6 +7381,11 @@ export default function Home() {
     const nextAction = eventResultNotice.nextAction;
     setEventResultNotice(null);
     if (!nextAction || !playerStats) return;
+    if (nextAction.type === "continue-event") {
+      setPendingEvent(nextAction.event);
+      setEventChoice(null);
+      return;
+    }
     if (nextAction.type === "national-finish") {
       const secondNational = nationalAttempts.find(
         (attempt) => attempt.attemptNumber === 2,
@@ -6165,11 +7482,20 @@ export default function Home() {
       definition: displayKeepsake(keepsake, keepsakeContext),
       record: keepsakes[keepsake.id],
     }))
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      const rarityOrder: Record<KeepsakeRarity, number> = {
+        gold: 0,
+        purple: 1,
+        blue: 2,
+        green: 3,
+        white: 4,
+      };
+      return (
+        rarityOrder[a.definition.rarity] - rarityOrder[b.definition.rarity] ||
         a.record.acquiredWeek - b.record.acquiredWeek ||
-        a.definition.atlasIndex - b.definition.atlasIndex,
-    );
+        a.definition.atlasIndex - b.definition.atlasIndex
+      );
+    });
   const drawerSlotCount = Math.max(
     24,
     Math.ceil((acquiredKeepsakes.length + 5) / 8) * 8,
@@ -6295,8 +7621,48 @@ export default function Home() {
     </>
   ) : null;
 
+  const sortedAchievements = [...achievementDefinitions].sort((a, b) => {
+    const unlockedDifference = Number(Boolean(unlockedAchievements[b.id])) - Number(Boolean(unlockedAchievements[a.id]));
+    return unlockedDifference || a.title.localeCompare(b.title, "zh-CN");
+  });
+  const selectedAchievement = achievementDefinitions.find(
+    (item) => item.id === selectedAchievementId,
+  );
   const achievementUi = (
     <>
+      <button
+        className="ending-archive-fab"
+        onClick={() => setEndingArchiveOpen(true)}
+        aria-label="打开结局档案库"
+      >
+        ▦ 档案 {endingArchive.length}
+      </button>
+      {endingArchiveOpen && (
+        <div className="achievement-backdrop" role="presentation">
+          <section className="achievement-modal ending-archive-modal" role="dialog" aria-modal="true" aria-label="结局档案库">
+            <header>
+              <div><p className="kicker">ENDING ARCHIVE</p><h2>结局档案库</h2><p>已经通关的种子与未来会永久保存在这台设备上。</p></div>
+              <button onClick={() => setEndingArchiveOpen(false)} aria-label="关闭结局档案库">×</button>
+            </header>
+            <div className="ending-archive-list">
+              {endingArchive.map((record) => (
+                <article key={record.id}>
+                  <span>{new Date(record.recordedAt).toLocaleDateString("zh-CN")}</span>
+                  <h3>{record.endingTitle}</h3>
+                  <p>{record.futureTitle ?? "未来仍在展开"}</p>
+                  <small>{record.name} · {record.seed}</small>
+                  <dl>
+                    {record.admission && <div><dt>录取</dt><dd>{record.admission} · {record.route}</dd></div>}
+                    {record.gaokao !== undefined && <div><dt>高考</dt><dd>{formatNumber(record.gaokao)} / 750</dd></div>}
+                    {record.nationalRank && <div><dt>国赛</dt><dd>全国第 {record.nationalRank}</dd></div>}
+                  </dl>
+                </article>
+              ))}
+              {!endingArchive.length && <div className="archive-empty"><strong>档案库还是空的</strong><p>完成一次录取与后日谈后，结局会自动归档。</p></div>}
+            </div>
+          </section>
+        </div>
+      )}
       <button
         className="achievement-fab"
         onClick={() => setAchievementOpen(true)}
@@ -6341,12 +7707,15 @@ export default function Home() {
               </button>
             </header>
             <div className="achievement-grid">
-              {achievementDefinitions.map((achievement) => {
+              {sortedAchievements.map((achievement) => {
                 const unlockedAt = unlockedAchievements[achievement.id];
                 return (
                   <article
                     className={unlockedAt ? "unlocked" : "locked"}
                     key={achievement.id}
+                    role={unlockedAt ? "button" : undefined}
+                    tabIndex={unlockedAt ? 0 : undefined}
+                    onClick={() => unlockedAt && setSelectedAchievementId(achievement.id)}
                   >
                     <span className="achievement-icon">
                       {unlockedAt ? "◇" : "?"}
@@ -6363,7 +7732,7 @@ export default function Home() {
                           {achievement.creditedBy
                             ? `来自 @${achievement.creditedBy} · `
                             : ""}
-                          {new Date(unlockedAt).toLocaleDateString("zh-CN")}
+                          {new Date(unlockedAt.split("|")[0]).toLocaleDateString("zh-CN")}
                         </small>
                       )}
                     </div>
@@ -6371,6 +7740,25 @@ export default function Home() {
                 );
               })}
             </div>
+            {selectedAchievement && unlockedAchievements[selectedAchievement.id] && (
+              <aside className="achievement-detail">
+                <button aria-label="关闭成就详情" onClick={() => setSelectedAchievementId(null)}>×</button>
+                <span className="achievement-icon">◇</span>
+                <div>
+                  <p className="kicker">UNLOCKED ACHIEVEMENT</p>
+                  <h3>{selectedAchievement.title}</h3>
+                  <p>{selectedAchievement.description}</p>
+                  <dl>
+                    <div><dt>达成方式</dt><dd>{achievementMethod(selectedAchievement)}</dd></div>
+                    <div><dt>获得时间</dt><dd>{new Date(unlockedAchievements[selectedAchievement.id].split("|")[0]).toLocaleString("zh-CN")}</dd></div>
+                    {unlockedAchievements[selectedAchievement.id].split("|")[1] && (
+                      <div><dt>游戏进度</dt><dd>第 {unlockedAchievements[selectedAchievement.id].split("|")[1]} 周</dd></div>
+                    )}
+                    {selectedAchievement.creditedBy && <div><dt>共创者</dt><dd>@{selectedAchievement.creditedBy}</dd></div>}
+                  </dl>
+                </div>
+              </aside>
+            )}
           </section>
         </div>
       )}
@@ -6617,6 +8005,10 @@ export default function Home() {
                 <div>
                   <dt>家庭态度</dt>
                   <dd>{generated.familySupport}</dd>
+                </div>
+                <div>
+                  <dt>家庭沟通倾向</dt>
+                  <dd>{generated.familyProfile.label}</dd>
                 </div>
                 <div>
                   <dt>校外培训报销</dt>
@@ -7130,6 +8522,8 @@ export default function Home() {
       const isNationalTheory = pendingAssessment.nationalStage === "theory";
       const isNationalExperiment =
         pendingAssessment.nationalStage === "experiment";
+      const isProvincialMock =
+        !provincialEstimate && pendingAssessment.maxScore === PROVINCIAL_MAX_SCORE;
       return (
         <main
           className={`shell assessment-shell ${
@@ -7157,7 +8551,7 @@ export default function Home() {
             <aside className="assessment-summary">
               <p className="kicker">
                 {provincialEstimate
-                  ? "省赛 · 第一次估分"
+                  ? "省赛 · 答题回忆估分"
                   : isNationalTheory
                     ? "国赛 · 理论成绩"
                     : isNationalExperiment
@@ -7186,23 +8580,28 @@ export default function Home() {
                         ? "综合分"
                         : pendingAssessment.type === "school"
                           ? "本次总分"
+                          : isProvincialMock
+                            ? "模拟成绩"
                         : "模拟排名"}
                 </span>
                 <strong>
                   {provincialEstimate
-                    ? `${formatNumber(provincialEstimate.estimateLow)}—${formatNumber(provincialEstimate.estimateHigh)}`
+                    ? `${formatNumber(provincialEstimate.estimateLow)}—${formatNumber(provincialEstimate.estimateHigh)} / ${PROVINCIAL_MAX_SCORE}`
                     : isNationalTheory && nationalResult
                       ? formatNumber(nationalResult.theoryT)
-                      : isNationalExperiment && nationalResult
+                    : isNationalExperiment && nationalResult
                         ? formatNumber(nationalResult.finalScore)
                         : pendingAssessment.type === "school" &&
                             pendingAssessment.totalScore
                           ? `${formatNumber(pendingAssessment.totalScore)} / 750`
+                          : isProvincialMock &&
+                              typeof pendingAssessment.totalScore === "number"
+                            ? `${formatNumber(pendingAssessment.totalScore)} / ${PROVINCIAL_MAX_SCORE}`
                     : pendingAssessment.rank}
                 </strong>
                 <small>
                   {provincialEstimate
-                    ? `预计全省第 ${provincialEstimate.estimateRankLow}—${provincialEstimate.estimateRankHigh} 名`
+                    ? `得分率 ${formatNumber(provincialScoreRate(provincialEstimate.estimateLow))}%—${formatNumber(provincialScoreRate(provincialEstimate.estimateHigh))}% · 预计全省第 ${provincialEstimate.estimateRankLow}—${provincialEstimate.estimateRankHigh} 名`
                     : isNationalTheory && nationalResult
                       ? `理论第 ${nationalResult.theoryRank} / ${nationalResult.participants} · ${
                           nationalResult.qualifiedForExperiment
@@ -7217,6 +8616,9 @@ export default function Home() {
                           }`
                         : pendingAssessment.type === "school"
                           ? `校内第 ${pendingAssessment.rank} / ${pendingAssessment.participants} · 当前阶段掌握 ${formatNumber(pendingAssessment.regularCoverage ?? 0)}%`
+                          : isProvincialMock &&
+                              typeof pendingAssessment.totalScore === "number"
+                            ? `得分率 ${formatNumber(provincialScoreRate(pendingAssessment.totalScore))}% · 预估第 ${pendingAssessment.rank} / ${pendingAssessment.participants}`
                     : `/ ${pendingAssessment.participants}`}
                 </small>
               </div>
@@ -7627,6 +9029,16 @@ export default function Home() {
               <div>
                 {shopItems
                   .filter((item) => (inventory[item.id] ?? 0) > 0)
+                  .sort((a, b) => {
+                    const order: Record<KeepsakeRarity, number> = {
+                      gold: 0,
+                      purple: 1,
+                      blue: 2,
+                      green: 3,
+                      white: 4,
+                    };
+                    return order[a.rarity] - order[b.rarity] || a.name.localeCompare(b.name, "zh-CN");
+                  })
                   .map((item) => (
                     <span key={item.id}>
                       {item.name} × {inventory[item.id]}
@@ -7669,6 +9081,9 @@ export default function Home() {
             schoolName={generated.school}
             relationships={rivalRelationships}
             retiredRivalIds={retiredRivalIds}
+            retiredRivalWeeks={retiredRivalWeeks}
+            provincialAttempts={provincialAttempts}
+            nationalAttempts={nationalAttempts}
             onStudy={(rival) => addAction(makeRivalStudyAction(rival))}
             onBack={() => setCareerTab("planner")}
           />
@@ -7885,7 +9300,7 @@ export default function Home() {
                     问父母要点钱
                     <small>
                       每四周固定到账 ¥{formatNumber(selected.stats.monthlyPocketMoney)}；
-                      额外申请次数越多，家庭支持消耗越大。
+                      额外申请只会轻微影响支持；家庭态度更受沟通与成绩经历影响。
                     </small>
                   </button>
                   <button
@@ -8450,6 +9865,9 @@ function RivalsPage({
   schoolName,
   relationships,
   retiredRivalIds,
+  retiredRivalWeeks,
+  provincialAttempts,
+  nationalAttempts,
   onStudy,
   onBack,
 }: {
@@ -8461,6 +9879,9 @@ function RivalsPage({
   schoolName: string;
   relationships: Record<string, RivalRelationship>;
   retiredRivalIds: string[];
+  retiredRivalWeeks: Record<string, number>;
+  provincialAttempts: ProvincialAttempt[];
+  nationalAttempts: NationalAttempt[];
   onStudy: (rival: Rival) => void;
   onBack: () => void;
 }) {
@@ -8559,7 +9980,12 @@ function RivalsPage({
                   const strengthKnown = stats.social >= rival.revealSocial + 8;
                   const canStudy =
                     unlocked && stats.peerFavor >= 18 && remainingTime >= 1;
-                  const snapshot = rivalSnapshot(rival, seed, week);
+                  const snapshot = rivalSnapshot(
+                    rival,
+                    seed,
+                    week,
+                    retiredRivalWeeks[rival.id],
+                  );
                   const relationship = normalizeRelationship(
                     relationships[rival.id],
                     seed,
@@ -8567,6 +9993,24 @@ function RivalsPage({
                   );
                   const relationshipRoute = relationshipRouteLabel(relationship);
                   const hasRetired = retiredRivalIds.includes(rival.id);
+                  const latestNationalResult = [...nationalAttempts]
+                    .sort((a, b) => b.attemptNumber - a.attemptNumber)
+                    .flatMap((attempt) => attempt.namedResults ?? [])
+                    .find((result) => result.rivalId === rival.id);
+                  const latestProvincialAttempt = [...provincialAttempts]
+                    .sort((a, b) => b.attemptNumber - a.attemptNumber)
+                    .find((attempt) =>
+                      (attempt.namedResults ?? []).some(
+                        (result) => result.rivalId === rival.id,
+                      ),
+                    );
+                  const latestProvincialResult = latestProvincialAttempt
+                    ? rankedNamedProvincialResults(
+                        latestProvincialAttempt,
+                        latestProvincialAttempt.finalScore ??
+                          latestProvincialAttempt.draftScore,
+                      ).find((result) => result.rivalId === rival.id)
+                    : undefined;
                   return (
                     <article
                       className={`rival-card ${unlocked ? "" : "locked"} ${
@@ -8618,6 +10062,18 @@ function RivalsPage({
                                   : `还需 ${formatNumber(Math.max(0, rival.revealSocial + 8 - stats.social))} 点社交以确认`}
                               </dd>
                             </div>
+                            {(latestNationalResult || latestProvincialResult) && (
+                              <div>
+                                <dt>最近正式成绩</dt>
+                                <dd>
+                                  {latestNationalResult
+                                    ? `国赛理论第 ${latestNationalResult.theoryRank} · 最终第 ${latestNationalResult.finalRank} · ${latestNationalResult.medal}`
+                                    : latestProvincialResult
+                                      ? `联赛 ${formatNumber(latestProvincialResult.score)}/${PROVINCIAL_MAX_SCORE} · 全省第 ${latestProvincialResult.rank}`
+                                      : "—"}
+                                </dd>
+                              </div>
+                            )}
                           </dl>
                           <button
                             className="rival-study-button"

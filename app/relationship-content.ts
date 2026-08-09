@@ -106,6 +106,133 @@ function personalityLine(key: RelationshipCandidate["personalityKey"], name: str
   return lines[key];
 }
 
+function candidateFamilyPortrait(seed: string, rivalId: string) {
+  const profiles = [
+    { label: "高焦虑家庭", contest: "每次排名都会重新讨论是否退赛", romance: "明确反对高中恋爱" },
+    { label: "结果导向家庭", contest: "成绩好时投入很多，连续失利时迅速收紧", romance: "只要成绩不掉就暂时不追问" },
+    { label: "长期规划家庭", contest: "愿意讨论两年路线和退出预案", romance: "要求边界，但不把感情直接视为错误" },
+    { label: "包容沟通家庭", contest: "更关心当事人是否仍愿意继续", romance: "愿意认识对方，再讨论作息与责任" },
+    { label: "放任独立家庭", contest: "很少干预，却也不总能提供情绪支持", romance: "通常不过问私人关系" },
+  ];
+  return profiles[hashSeed(`${seed}-${rivalId}-family-profile`) % profiles.length];
+}
+
+function firstContactScene(seed: string, rivalId: string, name: string) {
+  const scenes = [
+    {
+      key: "blackout",
+      title: "停电后的手电光",
+      body: `晚自习突然停电，${name}用手机照着你没画完的代谢图。你们在黑暗里把最后两个箭头争论清楚。`,
+      choices: [
+        ["warm", "把手机接过来，也替TA照亮草稿", "两束光在纸面上交叠。来电时，你们才发现彼此已经靠得很近。", { peerFavor: 2, reasoning: 0.4, san: 0.5 }],
+        ["practical", "先拍下图，约到明早继续核对", "你们没有在黑暗里逞强。第二天，那张照片成了第一次共同完成的笔记。", { peerFavor: 1, reasoning: 0.5 }],
+        ["tease", "说这算一次无氧条件下的代谢讨论", `${name}笑得手电晃了一下，最后一个箭头差点又画错。`, { peerFavor: 1.4, san: 1 }],
+        ["avoid", "借口去找应急灯，提前离开", "等你回来，图已经被独自补完。右下角空着一小块，像原本准备留给另一种笔迹。", { peerFavor: -0.6 }],
+      ],
+    },
+    {
+      key: "last-supper",
+      title: "食堂最后一份夜宵",
+      body: `训练结束太晚，食堂只剩一份热食。${name}掰开一次性筷子，问你要不要一人一半。`,
+      choices: [
+        ["warm", "接受，再去买两杯热水", "夜宵被分得不算公平，你们却都把更大的一半往对面推。", { peerFavor: 2, san: 1, pocketMoney: -2 }],
+        ["practical", "一人吃夜宵，一人去便利店补充", "你们用最现实的方式解决饥饿，回来时还记得替对方带一支顺手的笔。", { peerFavor: 1.2, pocketMoney: -10, san: 0.5 }],
+        ["tease", "宣布按体重和今日做题量分配", "荒谬的分配公式算了五分钟，最后还是一人一半。", { peerFavor: 1.4, san: 1.2 }],
+        ["avoid", "说自己不饿，让TA全部吃掉", `${name}没有勉强你。夜里你胃痛时，才看见TA发来一句“真的没事吗”。`, { san: -0.5, peerFavor: -0.3 }],
+      ],
+    },
+    {
+      key: "lab-rain",
+      title: "被雨困住的实验楼",
+      body: `大雨封住了回宿舍的路。${name}隔着玻璃数闪电，你们第一次没有用题目填满沉默。`,
+      choices: [
+        ["warm", "问TA每次数闪电时都在想什么", "话题从天气落到童年。雨停以前，你第一次听见一个不属于竞赛队的TA。", { peerFavor: 2, san: 1 }],
+        ["practical", "查看雷达图，规划一条不淋湿的路线", "计划只成功了一半。跑到宿舍门口时，你们都狼狈得笑了出来。", { peerFavor: 1.2, san: 0.8 }],
+        ["tease", "认真估算雷声传播距离", `${name}指出你的估算漏了回声。无用的争论让等待突然不再漫长。`, { reasoning: 0.3, peerFavor: 1.3, san: 0.8 }],
+        ["avoid", "戴上耳机，一个人等雨停", "玻璃上仍不断亮起闪电。你们站得很近，却各自拥有一场完全不同的雨。", { peerFavor: -0.5 }],
+      ],
+    },
+    {
+      key: "wrong-song",
+      title: "广播站点错的歌",
+      body: `午休广播放了一首不合时宜的旧歌。${name}忽然说自己小时候也听过，话题从细胞周期一路偏到了家乡。`,
+      choices: [
+        ["warm", "分享自己记得的那段旧生活", "两段互不相干的童年第一次在午休里并排出现。铃声响起时，话还没有说完。", { peerFavor: 2, mindset: 0.4 }],
+        ["practical", "把歌名记下来，晚训后再发给TA", "那晚你收到一份同样克制的歌单，标题只有日期。", { peerFavor: 1.3, san: 0.6 }],
+        ["tease", "吐槽广播站的年代定位出了问题", `${name}和你争论这首歌到底算不算老，直到你们都暴露了更多年龄不符的歌单。`, { peerFavor: 1.2, san: 1 }],
+        ["avoid", "说自己从不听歌，把话题拉回题目", "细胞周期重新占满桌面。刚才打开的那扇小窗没有关上，只是暂时没人再靠近。", { peerFavor: -0.4, reasoning: 0.2 }],
+      ],
+    },
+    {
+      key: "paper-argument",
+      title: "走廊尽头的争论",
+      body: `${name}和教练对一道题的答案争到所有人都走了。你留下来核对原论文，发现TA真正介意的是“不能把错答案教给下一届”。`,
+      choices: [
+        ["warm", "留下来和TA一起整理完整证据链", "你们把争执改写成一页勘误。第二天，教练没有道歉，却悄悄换掉了答案。", { peerFavor: 2, reasoning: 0.6, san: -0.4 }],
+        ["practical", "先保存论文和页码，等情绪过去再谈", "证据没有在争吵里耗尽。隔天的讨论短得多，也真正解决了问题。", { peerFavor: 1.2, reasoning: 0.5 }],
+        ["tease", "说TA以后一定会成为最难缠的教练", `${name}没忍住笑了，随后认真回答：“至少不会把错答案传下去。”`, { peerFavor: 1.4, san: 0.8 }],
+        ["avoid", "劝TA别和教练较真，先回宿舍", "TA点头收起论文。从那以后，涉及答案争议时很少再主动看向你。", { peerFavor: -0.8, coachFavor: 0.2 }],
+      ],
+    },
+    {
+      key: "vending-machine",
+      title: "体测后的自动贩卖机",
+      body: `跑完八百米后，${name}靠着贩卖机喘气，还不忘问你上午那道遗传题是不是少分了一类。`,
+      choices: [
+        ["warm", "先替TA买水，等呼吸平稳再谈题", "水递过去时，TA终于承认自己刚才差点跑不下来。遗传题第一次排在身体后面。", { peerFavor: 1.8, san: 0.8, pocketMoney: -4 }],
+        ["practical", "在瓶身上画出缺失的那一类", "一张临时遗传图随着水一起被喝皱。后来TA还把那个瓶盖留了很久。", { peerFavor: 1.2, reasoning: 0.4 }],
+        ["tease", "说氧债还没还完就别挑战孟德尔", `${name}试图反驳，却因为喘气把一句话拆成了四段。`, { peerFavor: 1.3, san: 1 }],
+        ["avoid", "说回教室再讲，先一个人离开", "你走出几步才听见贩卖机掉下一瓶水。那声闷响在空操场上格外清楚。", { peerFavor: -0.4 }],
+      ],
+    },
+    {
+      key: "moth",
+      title: "一只飞进教室的蛾",
+      body: `一只蛾绕着投影仪打转。所有人都嫌它碍事，${name}却拿纸杯把它送到窗外。你第一次注意到TA做题以外的耐心。`,
+      choices: [
+        ["warm", "替TA打开窗，护住纸杯边缘", "蛾在两个人的手之间停了一瞬才飞走。回座位后，谁都没有立刻翻书。", { peerFavor: 1.8, module2: 0.2, san: 0.7 }],
+        ["practical", "提醒先关灯，只留窗边光源", "办法很快奏效。TA看你的眼神像在确认，你们对很多无关紧要的生命有同一种认真。", { peerFavor: 1.3, reasoning: 0.2 }],
+        ["tease", "给它补记一次非计划行为观察", "你们在草稿角落写下三行不够科学的记录，最后一行是“成功逃逸”。", { peerFavor: 1.2, san: 1 }],
+        ["avoid", "催TA快一点，课程还没结束", "窗户很快关上。你没有做错什么，只是后来总会想起TA当时停顿的半秒。", { peerFavor: -0.5 }],
+      ],
+    },
+    {
+      key: "wrong-jacket",
+      title: "错拿的校服外套",
+      body: `你们训练后拿错了外套。交换时，${name}从口袋里翻出一张写满家长电话后的情绪速记。两个人都假装没看清。`,
+      choices: [
+        ["warm", "只问一句：今晚需要有人一起走吗", "你没有提那张纸。TA也没有解释，只在回宿舍的路上走得比平时慢。", { peerFavor: 2, san: 0.4 }],
+        ["practical", "交换外套，也把自己的口袋逐一检查清楚", "你用对等的谨慎保住了这次意外的边界。第二天，TA主动提起了电话。", { peerFavor: 1.4, mindset: 0.3 }],
+        ["tease", "只吐槽你们的校服辨识度太低", "尴尬被轻轻放过。那张纸没有消失，却不必在走廊里被迫解释。", { peerFavor: 1.1, san: 0.8 }],
+        ["avoid", "立刻说自己什么都没看见，然后走开", "否认说得太用力，反而证明你确实看见了。此后几天，TA把所有口袋都扣得很紧。", { peerFavor: -0.7 }],
+      ],
+    },
+    {
+      key: "ranking-board",
+      title: "月考榜前的停步",
+      body: `${name}在常规排名榜前停了很久，最后却问你要不要去操场走一圈。你们一路都没谈名次。`,
+      choices: [
+        ["warm", "陪TA走完一圈，再问要不要说说", "第一圈只有脚步声。第二圈开始时，TA终于承认家里已经在讨论退赛。", { peerFavor: 2, san: 0.6 }],
+        ["practical", "约好今晚不看榜，明天再一起复盘", "一天的距离没有让问题消失，却让成绩不再决定你们今晚的全部情绪。", { peerFavor: 1.2, mindset: 0.5 }],
+        ["tease", "提议给排名榜也安排一次遗忘曲线", `${name}笑着说最好忘得比常规课还快。那句笑话替真正的难过留了一个入口。`, { peerFavor: 1.3, san: 1 }],
+        ["avoid", "说自己还要订正月考，不去操场", "TA一个人走了。后来你才知道，那晚操场上的问题并不是一道题。", { peerFavor: -0.8, reasoning: 0.2 }],
+      ],
+    },
+    {
+      key: "first-bus",
+      title: "清晨第一班公交",
+      body: `外培集合太早，车上只有你和${name}醒着。城市还没亮，TA把一只耳机递过来，什么也没解释。`,
+      choices: [
+        ["warm", "接过耳机，和TA听完这一首", "耳机线把两个人限制在很近的距离。歌结束后，谁都没有急着归还。", { peerFavor: 2, san: 1 }],
+        ["practical", "先调低音量，约好到站互相叫醒", "你们在同一首歌里睡着，又在同一个急刹车里醒来。", { peerFavor: 1.2, san: 0.8 }],
+        ["tease", "问这是不是机构培训限定叫醒服务", `${name}说不想听可以还来，手却没有真的伸回去。`, { peerFavor: 1.4, san: 1 }],
+        ["avoid", "摇头，继续戴自己的耳机", "两段音乐在相邻座位里互不相干。天亮以后，这件事像从未发生。", { peerFavor: -0.5 }],
+      ],
+    },
+  ] as const;
+  return scenes[hashSeed(`${seed}-${rivalId}-first-contact`) % scenes.length];
+}
+
 function hiddenChoice(
   id: string,
   title: string,
@@ -146,26 +273,36 @@ export function nextRelationshipStoryEvent(
   };
 
   if (relation.bond >= 10 && !seen("desk")) {
+    const contact = firstContactScene(ctx.seed, rival.id, rival.name);
     return {
       ...base,
       id: `bondstory-${rival.id}-desk`,
       label: "人物共通线 · 留在桌角的笔记",
-      title: `${rival.name}把一本写满批注的教材放在你桌角。`,
+      title: contact.title,
       body: [
-        "竞赛教室的人渐渐有了固定座位。晚自习结束后，其他人陆续离开，只剩投影幕布没有收起，蓝白色的光照在空桌上。",
-        `“你上次问的那一段，我重新画了图。”${rival.name}没有把书递到你手里，只推到两张桌子之间，像是给你留下拒绝的余地。`,
+        contact.body,
+        "这不是一场正式的关系转折，也没有任何提示告诉你该选哪句话。只是从这天起，你开始在一天结束时记得另一个人的表情。",
         personalityLine(candidate.personalityKey, rival.name),
       ],
-      choices: [
-        hiddenChoice(`rel-warm-${rival.id}`, "问TA是否愿意一起讲一遍", "你们把原本五分钟能说完的问题讲了四十分钟。最后谁也没有抱怨时间，只在关灯时同时愣了一下。", { peerFavor: 2, reasoning: 0.5, san: 0.5, tags: [`关系:${rival.id}:认真回应`] }),
-        hiddenChoice(`rel-practical-${rival.id}`, "接过笔记，约定明天归还", "你没有多说什么。第二天清晨，笔记原样回到对方桌上，夹着一张补充过的示意图。", { peerFavor: 1, reasoning: 0.4, tags: [`关系:${rival.id}:可靠`] }),
-        hiddenChoice(`rel-tease-${rival.id}`, "笑着问这算不算私授讲义", `${rival.name}先是瞪了你一眼，随后也笑了。那本书在你们之间停留得比预计更久。`, { peerFavor: 1.5, san: 1, tags: [`关系:${rival.id}:轻松相处`] }),
-        hiddenChoice(`rel-avoid-${rival.id}`, "说自己今晚还有别的安排", "书被很快收了回去。对方说“没事”，语气没有变化；你却在回去之后想起了那张没看见的图。", { peerFavor: -0.5, tags: [`关系:${rival.id}:错过一次`] }),
-      ],
+      choices: contact.choices.map(([tone, title, result, effects]) =>
+        hiddenChoice(
+          `rel-${tone}-${rival.id}-${contact.key}`,
+          title,
+          result,
+          {
+            ...effects,
+            tags: [
+              `关系:${rival.id}:初动:${contact.key}`,
+              `关系:${rival.id}:${tone === "avoid" ? "错过一次" : "认真回应"}`,
+            ],
+          },
+        ),
+      ),
     };
   }
 
   if (relation.bond >= 20 && relation.trust >= 8 && !seen("night")) {
+    const family = candidateFamilyPortrait(ctx.seed, rival.id);
     return {
       ...base,
       id: `bondstory-${rival.id}-night`,
@@ -174,6 +311,7 @@ export function nextRelationshipStoryEvent(
       body: [
         "竞赛小测的排名刚发进群里。有人立刻开始比较分数，有人把手机反扣在桌面，假装自己没有看见。",
         `${rival.name}说家里刚刚问起这次成绩，问得很平静，却把每一句话都变成了“还值不值得继续”。`,
+        `${family.label}：对竞赛，家里${family.contest}；对恋爱，家里${family.romance}。这些立场会在以后的选择里继续出现。`,
         "这不是一道需要你给出解决方案的题。你甚至不确定，对方是想听建议，还是只是不想一个人坐在这里。",
       ],
       choices: [
@@ -303,7 +441,8 @@ export function nextRelationshipStoryEvent(
   }
 
   if (relation.route === "dating" && ctx.week >= 42 && !seen("interference")) {
-    const harsh = ctx.coachFavor < 10 || ctx.familySupport < 45;
+    const family = candidateFamilyPortrait(ctx.seed, rival.id);
+    const harsh = ctx.coachFavor < 10 || ctx.familySupport < 45 || family.romance.includes("反对");
     return {
       ...base,
       id: `bondstory-${rival.id}-interference`,
@@ -311,6 +450,7 @@ export function nextRelationshipStoryEvent(
       title: harsh ? "教练把你们分别叫进办公室。" : "家长从过长的聊天记录里察觉了什么。",
       body: [
         "谈话没有使用“喜欢”这个词。成年人更习惯讨论时间、排名、投入和责任，仿佛只要把这些词摆够整齐，人的感情就会自动让路。",
+        `${rival.name}来自${family.label}：${family.romance}。你面对的不只是教练和自己的家长，也包括对方回家后必须解释的那套规则。`,
         `你和${rival.name}被要求减少单独相处。对方没有当场反驳，只在离开前问你：“我们要不要先把话说清楚？”`,
         "抵抗可能让压力落到两个人身上；退让也可能把暂时的距离变成真正的裂缝。",
       ],
@@ -567,7 +707,18 @@ export function settleRelationshipWeek(
     next.lastInteractionWeek = week;
   } else if (next.route === "dating") {
     next.careDebt = clamp(next.careDebt + 0.45, 0, 20);
-    if (week - next.lastInteractionWeek >= 4) next.conflict = clamp(next.conflict + 0.8);
+    const silentWeeks = week - next.lastInteractionWeek;
+    if (silentWeeks >= 3) {
+      next.bond = clamp(next.bond - Math.min(1.6, 0.35 + (silentWeeks - 3) * 0.18));
+      next.trust = clamp(next.trust - Math.min(1.1, 0.2 + (silentWeeks - 3) * 0.12));
+    }
+    if (silentWeeks >= 4) next.conflict = clamp(next.conflict + 0.8);
+  } else if (!interacted) {
+    const silentWeeks = week - next.lastInteractionWeek;
+    if (silentWeeks >= 5) {
+      next.bond = clamp(next.bond - Math.min(0.9, 0.2 + (silentWeeks - 5) * 0.1));
+      if (next.route === "crush") next.romance = clamp(next.romance - 0.35);
+    }
   }
   return next;
 }
@@ -577,4 +728,20 @@ export function relationshipLearningBoost(relationships: Record<string, DeepRela
   if (!partner) return 0;
   if (partner.conflict >= 55 || partner.careDebt >= 8) return -0.04;
   return Math.min(0.06, 0.015 + partner.bond / 2000 + partner.trust / 2500);
+}
+
+export function relationshipWeeklyMoodEffect(
+  relationships: Record<string, DeepRelationship>,
+  week: number,
+) {
+  const partner = Object.values(relationships).find(
+    (relation) => relation.route === "dating",
+  );
+  if (!partner) return 0;
+  const silentWeeks = week - partner.lastInteractionWeek;
+  if (partner.conflict >= 55 || partner.careDebt >= 8 || silentWeeks >= 7)
+    return -1.2;
+  if (silentWeeks >= 4) return -0.6;
+  if (silentWeeks <= 1 && partner.bond >= 55) return 0.45;
+  return 0.1;
 }

@@ -454,16 +454,45 @@ function innerConflictFor(candidate: RelationshipCandidate, seed: string) {
   return conflicts[hashSeed(`${seed}-${candidate.rival.id}-personality-conflict`) % conflicts.length];
 }
 
-function conflictForeshadow(conflict: RelationshipInnerConflict, name: string) {
-  const lines: Record<RelationshipInnerConflict, string> = {
-    abandonment: `${name}总会在关系可能改变以前先准备好退路，仿佛主动失去比等待失去更安全。`,
-    burden: `${name}很少直接提出需要，似乎接受帮助就意味着欠下一笔迟早要偿还的债。`,
-    achievement: `${name}仍习惯用表现确认自己是否值得留下，哪怕此刻谈论的并不是成绩。`,
-    distance: `${name}需要一块只属于自己的空间；靠近得太急，关心也会被感受成控制。`,
-    caretaking: `${name}擅长看见别人的疲惫，却很难承认自己也可能需要被接住。`,
-    family: `${name}在涉及家长时总会先停顿一下，家门内的规则比学校里看见的更加复杂。`,
+function conflictForeshadow(
+  conflict: RelationshipInnerConflict,
+  name: string,
+  sceneKey: string,
+) {
+  const lines: Record<RelationshipInnerConflict, string[]> = {
+    abandonment: [
+      `${name}总会在关系可能改变以前先准备好退路，仿佛主动失去比等待失去更安全。`,
+      `${name}问“以后”的方式总像在提前练习告别；越是在意，越先替离开准备解释。`,
+      `${name}把每一次计划改变都听成关系将要结束的预告，却很少承认自己因此害怕。`,
+    ],
+    burden: [
+      `${name}很少直接提出需要，似乎接受帮助就意味着欠下一笔迟早要偿还的债。`,
+      `${name}习惯把求助改写成交换，仿佛只有立刻还清，才有资格被人照顾。`,
+      `${name}总先计算自己的需要会占用你多少时间；那份计算有时比问题本身更累。`,
+    ],
+    achievement: [
+      `${name}仍习惯用表现确认自己是否值得留下，哪怕此刻谈论的并不是成绩。`,
+      `${name}很难相信失败以后仍会被同样对待，于是每次靠近都夹带着一次自我证明。`,
+      `${name}把“被喜欢”和“表现得足够好”写在同一条等式里，而你们正慢慢看见这条等式的代价。`,
+    ],
+    distance: [
+      `${name}需要一块只属于自己的空间；靠近得太急，关心也会被感受成控制。`,
+      `${name}并不拒绝亲密，只需要确认沉默和独处不会被自动解释成冷淡。`,
+      `${name}靠近时很认真，退开时也同样认真；真正重要的是你们能否讨论那段距离。`,
+    ],
+    caretaking: [
+      `${name}擅长看见别人的疲惫，却很难承认自己也可能需要被接住。`,
+      `${name}总在所有人开口以前递出帮助，却会在轮到自己时说“没什么”。`,
+      `${name}把可靠当成了一种不能卸下的职责，连难过都要等别人离开以后再处理。`,
+    ],
+    family: [
+      `${name}在涉及家长时总会先停顿一下，家门内的规则比学校里看见的更加复杂。`,
+      `${name}能在赛场上直接表达判断，却会在手机亮起“家里”两个字时立刻改变语气。`,
+      `${name}从不把家庭简单说成支持或反对；那里同时有爱、期待、控制和很难偿还的亏欠。`,
+    ],
   };
-  return lines[conflict];
+  const variants = lines[conflict];
+  return variants[hashSeed(`${name}-${sceneKey}-${conflict}`) % variants.length];
 }
 
 function chooseLead(ctx: RelationshipDailyContext) {
@@ -504,7 +533,7 @@ export function nextPersonalityDailyEvent(ctx: RelationshipDailyContext): GameEv
         stage === "dating" ? "性格专属 · 恋爱日常" :
           stage === "friend" ? "性格专属 · 挚友日常" : "性格专属 · 人物共通线",
     title: picked.title(name),
-    body: [...picked.body(name), conflictForeshadow(conflict, name)],
+    body: [...picked.body(name), conflictForeshadow(conflict, name, picked.key)],
     concealConsequences: true,
     visualNovel: true,
     trigger: { earliestWeek: ctx.week, latestWeek: ctx.week },

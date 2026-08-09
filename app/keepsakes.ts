@@ -533,7 +533,7 @@ export const keepsakeDefinitions: KeepsakeDefinition[] = [
     category: "fantasy",
     atlasIndex: 56,
     description: "你从被帮助的人，变成了愿意给后来者留下一盏灯的人。",
-    effectText: "功能型金色：首次获得时心态+1、社交+0.5，并扩充成年后日谈。",
+    effectText: "功能型金色：首次获得时心态+1、社交+0.5；作为难得的群友祝福，为正式联赛与国赛提供极小的运气修正，并扩充成年后日谈。",
     reward: { mindset: 1, social: 0.5 },
     unlock: (context) => hasEvent(context, "fantasy-archive") && hasTag(context, "幻想乡:"),
   },
