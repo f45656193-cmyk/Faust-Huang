@@ -89,6 +89,28 @@ test("人物线用隐藏后果推进，并能走通朦胧好感到正式恋爱",
   assert(relationshipLearningBoost({ [rival.id]: relation }) > 0);
 });
 
+test("十种关系初动文本各自拥有匹配的独立选项", () => {
+  const scenes = new Map();
+  for (let index = 0; index < 500 && scenes.size < 10; index += 1) {
+    const seed = `FIRST-CONTACT-${index}`;
+    const relation = { ...defaultRelationship(seed, rival.id), bond: 12, trust: 3 };
+    const event = nextRelationshipStoryEvent(context({ seed, relation, week: 8 }));
+    assert.equal(event.id, "bondstory-rival-test-desk");
+    scenes.set(event.title, event);
+  }
+  assert.equal(scenes.size, 10);
+  for (const event of scenes.values()) {
+    assert.equal(event.choices.length, 4);
+    assert.equal(new Set(event.choices.map((choice) => choice.title)).size, 4);
+    assert(event.choices.every((choice) => choice.id.includes("rival-test")));
+    assert(event.choices.every((choice) => ![
+      "问TA是否愿意一起讲一遍",
+      "接过笔记，约定明天归还",
+      "笑着问这算不算私授讲义",
+    ].includes(choice.title)));
+  }
+});
+
 test("同性同届角色仍可成为挚友，但不会出现异性恋爱选项", () => {
   const relation = normalizeRelationship({ bond: 35, trust: 18 }, "SAME", rival.id);
   const event = nextRelationshipStoryEvent({
@@ -152,19 +174,19 @@ function dailyContext(route, relationOverrides = {}) {
   };
 }
 
-test("四个关系阶段拥有四十二条独立日常，而不是重复一段模板", () => {
-  assert.equal(relationshipDailyCount, 42);
+test("四个关系阶段拥有六十条独立日常，而不是重复一段模板", () => {
+  assert.equal(relationshipDailyCount, 60);
   assert.deepEqual(relationshipDailyStageCounts, {
     neutral: 8,
-    crush: 13,
-    dating: 13,
+    crush: 21,
+    dating: 23,
     friend: 8,
   });
 });
 
-test("五类性格各有八条专属剧情，总日常扩展到八十二条", () => {
+test("五类性格各有八条专属剧情，总日常扩展到一百条", () => {
   assert.equal(relationshipPersonalityDailyCount, 40);
-  assert.equal(relationshipDailyCount + relationshipPersonalityDailyCount, 82);
+  assert.equal(relationshipDailyCount + relationshipPersonalityDailyCount, 100);
   assert.deepEqual(relationshipPersonalityCounts, {
     reserved: 8,
     warm: 8,

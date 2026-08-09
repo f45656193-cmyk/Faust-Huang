@@ -70,7 +70,7 @@ function provincial(seed, player, participants = 1300, teamPlaces = 17) {
         correct += 1;
       }
     }
-    return round1((correct / 80) * 100);
+    return correct * 2;
   };
   const playerScore = score(
     player.modules,
@@ -82,15 +82,20 @@ function provincial(seed, player, participants = 1300, teamPlaces = 17) {
     `${seed}-province-player-${week}`,
   );
   const rivals = Array.from({ length: participants - 1 }, (_, index) => {
+    const namedCore = index < 70;
     const elite =
       seededUnit(`${seed}-province-elite-${week}-${index}`) < 0.045 ? 10 : 0;
     const grade = index % 7 === 0 ? 6 : index % 5 === 0 ? -4 : 0;
     const latent = clamp(
-      22 +
-        seededUnit(`${seed}-province-level-a-${week}-${index}`) * 44 +
-        (seededUnit(`${seed}-province-level-b-${week}-${index}`) - 0.5) * 16 +
-        elite +
-        grade,
+      namedCore
+        ? 40 +
+            seededUnit(`${seed}-named-core-a-${week}-${index}`) * 32 +
+            (seededUnit(`${seed}-named-core-b-${week}-${index}`) - 0.5) * 10
+        : 22 +
+            seededUnit(`${seed}-province-level-a-${week}-${index}`) * 44 +
+            (seededUnit(`${seed}-province-level-b-${week}-${index}`) - 0.5) * 16 +
+            elite +
+            grade,
       10,
       91,
     );
@@ -298,11 +303,17 @@ function sample(label, player, count = 120) {
   return {
     label,
     provinceAverage: round1(average(province.map((item) => item.playerScore))),
+    provinceAverageRate: round1(
+      average(province.map((item) => (item.playerScore / 160) * 100)),
+    ),
     provinceMedianRank: median(province.map((item) => item.rank)),
     provinceTeamRate: round1(
       (province.filter((item) => item.qualified).length / count) * 100,
     ),
     provinceAverageCutoff: round1(average(province.map((item) => item.cutoff))),
+    provinceAverageCutoffRate: round1(
+      average(province.map((item) => (item.cutoff / 160) * 100)),
+    ),
     nationalAverageRaw: round1(average(nationals.map((item) => item.raw))),
     nationalMedianTheoryRank: median(nationals.map((item) => item.theoryRank)),
     nationalExperimentRate: round1(
@@ -322,6 +333,39 @@ function sample(label, player, count = 120) {
         count) *
         100,
     ),
+  };
+}
+
+function rationalShopRoute(player) {
+  const purchases = [
+    { id: "coffee", name: "冰美式", price: 12, count: 8 },
+    { id: "chocolate", name: "抽屉里的巧克力", price: 10, count: 9 },
+    { id: "mint", name: "薄荷糖与荧光笔套装", price: 24, count: 6 },
+    { id: "earplugs", name: "隔音耳塞", price: 22, count: 4 },
+    { id: "hardback-notebook", name: "深绿色硬壳笔记本", price: 30, count: 1 },
+  ];
+  const totalCost = purchases.reduce(
+    (total, purchase) => total + purchase.price * purchase.count,
+    0,
+  );
+  // 以普通开局零花钱 160 元、每四周 45 元计算。玩家只在高强度周使用，
+  // 咖啡带来的行动点重新投入学习，恢复品留给模考与国赛周，不假设无限叠加。
+  const twoYearBudget = 160 + Math.floor(104 / 4) * 45;
+  return {
+    purchases,
+    totalCost,
+    twoYearBudget,
+    player: {
+      ...player,
+      modules: player.modules.map((value) => clamp(value + 0.8)),
+      reasoning: clamp(player.reasoning + 0.4),
+      speed: clamp(player.speed + 1.1),
+      san: clamp(player.san + 4.5),
+      mindset: clamp(player.mindset + 1.6),
+      experimentModules: player.experimentModules.map((value) =>
+        clamp(value + 0.5),
+      ),
+    },
   };
 }
 
@@ -471,12 +515,50 @@ test("Monte Carlo balance keeps effort, luck, and elite difficulty distinct", ()
     JSON.stringify({ regularOnly, balanced, nationalSeed, elite }, null, 2),
   );
   assert.equal(regularOnly.provinceTeamRate, 0);
-  assert.ok(balanced.provinceAverageCutoff >= 60);
-  assert.ok(balanced.provinceAverageCutoff <= 67);
+  assert.ok(balanced.provinceAverageCutoff >= 96);
+  assert.ok(balanced.provinceAverageCutoff <= 107.2);
+  assert.ok(balanced.provinceAverageCutoffRate >= 60);
+  assert.ok(balanced.provinceAverageCutoffRate <= 67);
   assert.ok(balanced.nationalAverageRaw >= 57);
   assert.ok(balanced.nationalAverageRaw <= 65);
   assert.ok(nationalSeed.nationalTop50Rate >= 5);
   assert.ok(nationalSeed.nationalTop50Rate <= 45);
   assert.ok(elite.nationalTop50Rate > balanced.nationalTop50Rate);
   assert.ok(elite.nationalTop50Rate < 80);
+});
+
+test("rational shopping and item use help without replacing study", () => {
+  const basePlayer = {
+    modules: [80, 78, 82, 79],
+    reasoning: 58,
+    speed: 61,
+    san: 62,
+    mindset: 64,
+    experimentModules: [70, 72, 68, 70],
+  };
+  const shopping = rationalShopRoute(basePlayer);
+  const withoutItems = sample("rational-items", basePlayer, 80);
+  const withItems = sample("rational-items", shopping.player, 80);
+  console.log(
+    JSON.stringify(
+      {
+        rationalShopping: {
+          purchases: shopping.purchases,
+          totalCost: shopping.totalCost,
+          twoYearBudget: shopping.twoYearBudget,
+          withoutItems,
+          withItems,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  assert.ok(shopping.totalCost <= shopping.twoYearBudget * 0.45);
+  assert.ok(withItems.nationalAverageRaw >= withoutItems.nationalAverageRaw);
+  assert.ok(
+    withItems.nationalAverageRaw - withoutItems.nationalAverageRaw <= 3,
+  );
+  assert.ok(withItems.provinceTeamRate - withoutItems.provinceTeamRate <= 15);
+  assert.ok(withItems.nationalTop50Rate - withoutItems.nationalTop50Rate <= 10);
 });

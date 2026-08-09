@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   communityAchievementConditions,
   communityAchievementDefinitions,
+  communityAchievementUnlockMethods,
 } from "../app/community-achievements.ts";
 import { nextFantasyStoryEvent } from "../app/fantasy-content.ts";
 
@@ -49,6 +50,19 @@ test("共创成就编号唯一，署名只出现在有提出者的条目", () =>
     communityAchievementDefinitions.find((item) => item.id === "new-world").creditedBy,
     undefined,
   );
+});
+
+test("每个共创成就都有与后台判定分离的真实达成方式", () => {
+  const ids = communityAchievementDefinitions.map((item) => item.id).sort();
+  assert.deepEqual(Object.keys(communityAchievementUnlockMethods).sort(), ids);
+  for (const achievement of communityAchievementDefinitions) {
+    const method = communityAchievementUnlockMethods[achievement.id];
+    assert.ok(method.length >= 8, `${achievement.id} missing unlock method`);
+    assert.notEqual(method, achievement.description);
+  }
+  assert.match(communityAchievementUnlockMethods["remember-you"], /连续九周/);
+  assert.match(communityAchievementUnlockMethods["great-luck"], /160分制/);
+  assert.match(communityAchievementUnlockMethods["dream-end"], /省队线后一名/);
 });
 
 test("幻想乡加入与聊天成就只按真实标签和次数触发", () => {
@@ -125,7 +139,7 @@ test("幻想乡是一条有顺序且隐藏后果的群像线", () => {
     peerFavor: 20,
     san: 70,
     slackActions: 1,
-    slackedThisWeek: false,
+    slackedThisWeek: true,
     slackDependence: 1,
     resolvedEvents: ["fantasy-join"],
     storyTags: ["幻想乡:加入"],
@@ -134,6 +148,21 @@ test("幻想乡是一条有顺序且隐藏后果的群像线", () => {
   });
   assert.equal(first.id, "fantasy-first-question");
   assert(first.body.join("").length > 100);
+  const joinedWithoutSlack = nextFantasyStoryEvent({
+    week: 13,
+    seed: "JOINED-NO-SLACK",
+    social: 50,
+    peerFavor: 20,
+    san: 70,
+    slackActions: 2,
+    slackedThisWeek: false,
+    slackDependence: 1,
+    resolvedEvents: ["fantasy-join"],
+    storyTags: ["幻想乡:加入"],
+    activeTeamSize: 15,
+    hasNationalAttempt: false,
+  });
+  assert.equal(joinedWithoutSlack, null);
 });
 
 test("第一次暂缓加入后会收到一次真正可选择的二次邀请", () => {

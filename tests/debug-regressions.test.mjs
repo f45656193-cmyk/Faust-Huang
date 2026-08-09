@@ -160,3 +160,78 @@ test("monthly pocket money and weekly chocolate limits are settled in gameplay",
   assert.match(page, /const weeklySingleUse = \[[\s\S]*?"chocolate"/);
   assert.match(page, /lastChocolateWeek === week - 1 \? current \+ 1 : 1/);
 });
+
+test("allowance requests and family trust have bounded, event-driven costs", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /amount: 30,[\s\S]*?baseSupportCost: 3/);
+  assert.match(page, /amount: 80,[\s\S]*?baseSupportCost: 6/);
+  assert.match(page, /amount: 150,[\s\S]*?baseSupportCost: 10/);
+  assert.match(page, /Math\.min\(1\.8, 1 \+ allowanceRequestCount \* 0\.1\)/);
+  assert.match(page, /function makeFamilyCheckpointEvent/);
+  assert.match(page, /key: "national-one"/);
+  assert.match(page, /nextStats\.regularNeglectWeeks >= 4/);
+  assert.match(page, /pendingAssessment\.totalScore >= 650/);
+  assert.match(page, /pendingAssessment\.nationalStage === "experiment"/);
+});
+
+test("individual departures have varied causes and aftermaths", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  for (const phrase of [
+    "健康暂停",
+    "与教练长期冲突",
+    "兴趣转移",
+    "家庭突发变故",
+    "departure-aftermath",
+  ]) {
+    assert.match(page, new RegExp(phrase));
+  }
+  assert.match(page, /const waveScenes = \[/);
+  assert.match(page, /const scenes = \[[\s\S]*?省联考群里/);
+});
+
+test("retired rivals freeze and cannot re-enter generic mock events", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /retiredRivalWeeks/);
+  assert.match(page, /退赛后停止训练/);
+  assert.match(page, /mentionedRival && retiredRivalIds\.includes\(mentionedRival\.id\)/);
+  assert.match(page, /departure-persuade-success/);
+  assert.match(page, /relation\.tension >= 35/);
+});
+
+test("national contest scenes stay in one chained week and mock papers are not estimated", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /type: "continue-event"/);
+  assert.match(page, /makeNationalExperimentEvent/);
+  assert.doesNotMatch(page, /calendar\.firstNationalWeek \+ 3, makeNationalAwardEvent/);
+  assert.match(page, /assessmentItem\?\.assessment\?\.title === "全国中学生生物学联赛"/);
+});
+
+test("provincial exams and mocks use 160 raw points plus a displayed rate", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /const PROVINCIAL_QUESTION_COUNT = 80/);
+  assert.match(page, /const PROVINCIAL_POINTS_PER_QUESTION = 2/);
+  assert.match(page, /correctTotal \* PROVINCIAL_POINTS_PER_QUESTION/);
+  assert.match(page, /pendingAssessment\.maxScore === PROVINCIAL_MAX_SCORE/);
+  assert.match(page, /得分率.*provincialScoreRate/);
+  assert.match(page, /normalizeProvincialAttemptScoreScale/);
+});
+
+test("named rivals occupy real provincial and national exam slots", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /world\.provinceParticipants - 1 - eligibleNamedRivals\.length/);
+  assert.match(page, /participants - 1 - eligibleNamedRivals\.length/);
+  assert.match(page, /generatedCoreRivalContexts/);
+  assert.match(page, /coreSameGrade: 30 \+/);
+  assert.match(page, /coreUpperGrade: 30 \+/);
+  assert.match(page, /coreLowerGrade: 30 \+/);
+  assert.match(page, /retiredWeek === undefined \|\| retiredWeek > week/);
+  assert.match(page, /namedResults: NamedProvincialResult\[\]/);
+  assert.match(page, /namedResults: NamedNationalResult\[\]/);
+  assert.match(page, /最近正式成绩/);
+  assert.match(page, /联赛之后 · 熟人榜单/);
+  assert.match(page, /national-rest-rival-/);
+});
