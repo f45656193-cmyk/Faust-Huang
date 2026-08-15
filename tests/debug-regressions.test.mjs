@@ -82,7 +82,13 @@ test("gold and true-silver non-Qingbei exceptional routes bypass written exam", 
     assert.ok(application.choices.some((choice) => choice.id === "apply-exception-east"));
     assert.ok(!application.choices.some((choice) => choice.id === "apply-ordinary-east"));
     state = advancePostCareer(state, "apply-exception-east", input);
-    for (const id of ["second-health", "mock2-calm", "gaokao-enter"]) {
+    for (const id of [
+      "second-health",
+      "mock2-calm",
+      "eve-alone-check",
+      "gaokao-enter",
+      "score-results-plan",
+    ]) {
       state = advancePostCareer(state, id, input);
     }
     assert.equal(state.stage, "strong-interview");

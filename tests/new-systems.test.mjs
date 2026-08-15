@@ -43,6 +43,6 @@ test("长期不联系会压低恋爱和挚友关系，分手和复合最多一�
 
 test("开发者更新日志保持倒序且本次内容已登记", () => {
   assert.ok(developerChangelog.length >= 2);
-  assert.equal(developerChangelog[0].version, "1.1.1");
-  assert.ok(developerChangelog[0].items.some((item) => item.includes("共创剧情文本修订")));
+  assert.equal(developerChangelog[0].version, "1.1.2");
+  assert.ok(developerChangelog[0].items.some((item) => item.includes("人物记忆")));
 });
