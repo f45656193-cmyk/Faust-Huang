@@ -9,8 +9,9 @@
     "dev": "node scripts/run-vinext.mjs dev",
     "build": "node scripts/run-vinext.mjs build",
     "start": "node scripts/run-vinext.mjs start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/national-rules.test.mjs tests/balance-monte-carlo.mjs tests/post-career-balance.test.mjs tests/debug-regressions.test.mjs tests/relationship-routes.test.mjs tests/community-achievements.test.mjs tests/future-epilogues.test.mjs tests/keepsakes.test.mjs tests/new-systems.test.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/national-rules.test.mjs tests/balance-monte-carlo.mjs tests/post-career-balance.test.mjs tests/debug-regressions.test.mjs tests/relationship-routes.test.mjs tests/community-achievements.test.mjs tests/future-epilogues.test.mjs tests/keepsakes.test.mjs tests/new-systems.test.mjs tests/causal-systems.test.mjs tests/causal-playthrough.test.mjs",
     "audit:story": "node scripts/audit-story-text.mjs",
+    "debug:causal": "node scripts/run-causal-debug.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
