@@ -2209,12 +2209,17 @@ export function postCareerDeveloperCatalog(): GameEvent[] {
   ) => {
     const state = { ...createPostCareer(input), ...statePatch, stage };
     const scene = getPostScene(state, input);
+    const editorBody = stage === "score-release" && state.gaokao
+      ? [scene.lead, scene.detail].map((text) => text
+          .replaceAll(state.gaokao!.total.toFixed(1), "{高考总分}")
+          .replaceAll(String(state.gaokao!.provinceRank), "{全省位次}"))
+      : [scene.lead, scene.detail];
     events.push({
       id: `post-career-editor-${stage}-${variantKey}`,
       phase: "ending",
       label: scene.kicker,
       title: scene.title,
-      body: [scene.lead, scene.detail],
+      body: editorBody,
       concealConsequences: true,
       trigger: { earliestWeek: 105, latestWeek: 160 },
       archive: {
@@ -2223,7 +2228,9 @@ export function postCareerDeveloperCatalog(): GameEvent[] {
         clusterKey: `post-career-${stage}`,
         variantKey,
         variantLabel,
-        timingNote: "竞赛主线结束后，按实际前置结果进入",
+        timingNote: stage === "score-release"
+          ? "竞赛主线结束后进入；{高考总分}与{全省位次}会在实际游玩时动态替换"
+          : "竞赛主线结束后，按实际前置结果进入",
         order,
       },
       choices: scene.choices.map((choice) => ({
