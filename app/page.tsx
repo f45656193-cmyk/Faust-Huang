@@ -16,6 +16,14 @@ import {
   type WeeklyAction,
 } from "./game-data";
 import { linkedStoryDeveloperEvents, linkedWeeklyEvents } from "./event-library";
+import { causalLifeDeveloperCatalog, causalLifeEvents } from "./causal-life-events";
+import {
+  causalEligibility,
+  causalPriority,
+  recordNarrativeMemory,
+  withCausalContinuity,
+  type NarrativeMemory,
+} from "./narrative-causality";
 import { familyWeeklyScenes as familyWeeklySceneCatalog } from "./family-weekly-content";
 import { familyCheckpointContent } from "./family-checkpoint-content";
 import { developerChangelog } from "./developer-changelog";
@@ -82,6 +90,7 @@ import {
   advancePostCareer,
   createPostCareer,
   getPostScene,
+  postCareerDeveloperCatalog,
   postKnowledgeTotal,
   postSubjectMaxima,
   type PostCareerInput,
@@ -1586,6 +1595,18 @@ function itemSpriteStyle(atlasIndex: number): CSSProperties {
   };
 }
 
+function shopItemSpriteStyle(item: ShopItem): CSSProperties {
+  if (item.customSpriteIndex === undefined) return itemSpriteStyle(item.atlasIndex);
+  const column = item.customSpriteIndex % 2;
+  const row = Math.floor(item.customSpriteIndex / 2);
+  return {
+    backgroundImage: "url(/items/causal-keepsakes.png)",
+    backgroundPosition: `${column * 100}% ${row * 100}%`,
+    backgroundSize: "200% 200%",
+    imageRendering: "pixelated",
+  };
+}
+
 function regularUnlockedScore(week: number) {
   if (week <= 8) return round1(300 + (week - 1) * 2.5);
   if (week <= 52) return round1(317.5 + (week - 8) * 4.4);
@@ -1649,6 +1670,7 @@ type ShopItem = {
   category: "补给" | "学习" | "玩具" | "特殊";
   rarity: KeepsakeRarity;
   atlasIndex: number;
+  customSpriteIndex?: number;
   description: string;
   flavor: string;
   consumable: boolean;
@@ -1785,6 +1807,31 @@ const achievementDefinitions: AchievementDefinition[] = [
     title: "离开那张排名表",
     description: "离开原有学校轨道，进入非传统教育路径。",
   },
+  {
+    id: "causal-chain-complete",
+    title: "事情后来真的有了后来",
+    description: "完整经历任意一条十节点事件因果链。",
+  },
+  {
+    id: "team-photo-memory",
+    title: "二十七格里的这一格",
+    description: "让那张普通训练日的合影在人员变化后重新连接起旧队员。",
+  },
+  {
+    id: "letter-to-past",
+    title: "信封上的日期到了",
+    description: "回应过去的自己，或兑现信中那件与竞赛无关的小事。",
+  },
+  {
+    id: "layered-evidence",
+    title: "不覆盖旧标签",
+    description: "让不完整的口述与重新调查的证据并列保存。",
+  },
+  {
+    id: "relationship-renewed",
+    title: "旧路线，新站点",
+    description: "与久未联系的人从现在的生活重新认识彼此。",
+  },
   ...communityAchievementDefinitions,
 ];
 
@@ -1809,6 +1856,11 @@ function achievementMethod(achievement: AchievementDefinition) {
     "early-return": "在第16周及以前退赛，并将高三流程推进到二轮复习或更后阶段。",
     pause: "在身心危机结局中接受休学与治疗安排。",
     withdrawal: "触发退学结局，离开原有学校轨道。",
+    "causal-chain-complete": "完整解决任意一条十节点事件链。",
+    "team-photo-memory": "冲洗并分享训练日合影，让旧队员重新开口联系。",
+    "letter-to-past": "拆开写给未来自己的信，并回应过去留下的请求。",
+    "layered-evidence": "在标本支线中并列保留口述记忆与重新调查结果。",
+    "relationship-renewed": "沿旧公交路线重逢后，选择从彼此的近况重新开始。",
   };
   return (
     achievement.unlockMethod ??
@@ -2031,6 +2083,58 @@ const shopItems: ShopItem[] = [
     flavor: "容量不大，文件夹名称却从“最终版”排到了“真的最终版3”。",
     consumable: false,
     purchaseTag: "shop:data-usb",
+  },
+  {
+    id: "instant-camera",
+    name: "一次性胶片相机",
+    price: 48,
+    category: "特殊",
+    rarity: "blue",
+    atlasIndex: 14,
+    customSpriteIndex: 0,
+    description: "解锁队伍合影及照片冲洗后的延迟支线。",
+    flavor: "只有二十七张底片，所以每次按下快门都像在承认这一刻值得留下。",
+    consumable: false,
+    purchaseTag: "shop:instant-camera",
+  },
+  {
+    id: "letter-set",
+    name: "没有收件人的信纸",
+    price: 18,
+    category: "特殊",
+    rarity: "green",
+    atlasIndex: 15,
+    customSpriteIndex: 1,
+    description: "解锁写信、封存与毕业前拆信支线。",
+    flavor: "纸张很普通，真正昂贵的是决定哪些话值得留下。",
+    consumable: false,
+    purchaseTag: "shop:letter-set",
+  },
+  {
+    id: "specimen-labels",
+    name: "防水标本标签",
+    price: 34,
+    category: "学习",
+    rarity: "green",
+    atlasIndex: 16,
+    customSpriteIndex: 2,
+    description: "解锁一次校园标本记录和后续归还支线。",
+    flavor: "标签能抵抗酒精和雨水，却未必抵抗得住潦草字迹。",
+    consumable: false,
+    purchaseTag: "shop:specimen-labels",
+  },
+  {
+    id: "old-bus-card",
+    name: "旧公交卡套",
+    price: 15,
+    category: "玩具",
+    rarity: "white",
+    atlasIndex: 17,
+    customSpriteIndex: 3,
+    description: "解锁训练结束后的末班车与旧路线重访支线。",
+    flavor: "透明夹层里还留着一张早已停运线路的时刻表。",
+    consumable: false,
+    purchaseTag: "shop:old-bus-card",
   },
 ];
 
@@ -2994,8 +3098,9 @@ function findWeeklyEvent(
   counts: Record<string, number>,
   isTrainingWeek: boolean,
   retiredRivalIds: string[],
+  narrativeMemories: NarrativeMemory[],
 ) {
-  const pool = [...weeklySocialEvents, ...linkedWeeklyEvents];
+  const pool = [...weeklySocialEvents, ...linkedWeeklyEvents, ...causalLifeEvents];
   const eligible = pool.filter((event) => {
       const trigger = event.trigger;
       if (resolved.includes(event.id)) return false;
@@ -3006,6 +3111,14 @@ function findWeeklyEvent(
       if (isTrainingWeek && event.phase !== "training") return false;
       if (!isTrainingWeek && event.phase === "training") return false;
       if (week < trigger.earliestWeek || week > trigger.latestWeek) return false;
+      if (
+        !causalEligibility(event, {
+          week,
+          resolvedEvents: resolved,
+          memories: narrativeMemories,
+        }).eligible
+      )
+        return false;
       if (trigger.allowedWeeks && !trigger.allowedWeeks.includes(week)) return false;
       const chainMatch = event.id.match(/^chain-(.+)-(\d{2})$/);
       if (chainMatch && Number(chainMatch[2]) > 1) {
@@ -3096,8 +3209,16 @@ function findWeeklyEvent(
       ? makeTrainingRoutineEvent(week, seed)
       : makeRoutineEvent(week, seed);
   const candidates = probabilistic;
-  const index = hashSeed(`${seed}-weekly-event-${week}`) % candidates.length;
-  return candidates[index];
+  const ranked = [...candidates].sort((left, right) => {
+    const leftScore =
+      seededUnit(`${seed}-weekly-event-${week}-${left.id}`) *
+      causalPriority(left);
+    const rightScore =
+      seededUnit(`${seed}-weekly-event-${week}-${right.id}`) *
+      causalPriority(right);
+    return rightScore - leftScore;
+  });
+  return withCausalContinuity(ranked[0], narrativeMemories);
 }
 
 function makeTrainingRoutineEvent(week: number, seed: string): GameEvent {
@@ -5418,6 +5539,7 @@ export default function Home() {
   const [eventResultNotice, setEventResultNotice] =
     useState<EventResultNotice | null>(null);
   const [resolvedEvents, setResolvedEvents] = useState<string[]>([]);
+  const [narrativeMemories, setNarrativeMemories] = useState<NarrativeMemory[]>([]);
   const [storyTags, setStoryTags] = useState<string[]>([]);
   const [actionCounts, setActionCounts] = useState<Record<string, number>>({});
   const [currentWeekUses, setCurrentWeekUses] = useState<Record<string, number>>({});
@@ -5582,6 +5704,7 @@ export default function Home() {
     eventChoice,
     eventResultNotice,
     resolvedEvents,
+    narrativeMemories,
     storyTags,
     actionCounts,
     currentWeekUses,
@@ -5723,6 +5846,7 @@ export default function Home() {
           : null,
       );
       setResolvedEvents(data.resolvedEvents ?? []);
+      setNarrativeMemories(data.narrativeMemories ?? []);
       setStoryTags(data.storyTags ?? []);
       setActionCounts(data.actionCounts ?? {});
       setCurrentWeekUses(data.currentWeekUses ?? {});
@@ -5948,6 +6072,15 @@ export default function Home() {
         postCareerState?.ending?.subtitle.includes("休学结局") ?? false,
       withdrawal:
         postCareerState?.ending?.subtitle.includes("退学结局") ?? false,
+      "causal-chain-complete": narrativeMemories.some(
+        (memory) => (memory.chainStep ?? 0) >= 10,
+      ),
+      "team-photo-memory": storyTags.includes("memory:team-photo-shared"),
+      "letter-to-past":
+        storyTags.includes("memory:kept-promise-to-self") ||
+        storyTags.includes("memory:answered-past-self"),
+      "layered-evidence": storyTags.includes("memory:layered-evidence"),
+      "relationship-renewed": storyTags.includes("memory:relationship-renewed"),
     };
     Object.assign(
       conditions,
@@ -5987,6 +6120,7 @@ export default function Home() {
     currentWeekUses,
     chocolateStreak,
     nationalAttempts,
+    narrativeMemories,
     playerStats,
     postCareerInput,
     postCareerState,
@@ -6079,6 +6213,7 @@ export default function Home() {
     setEventChoice(null);
     setEventResultNotice(null);
     setResolvedEvents([]);
+    setNarrativeMemories([]);
     setStoryTags([`origin:${selected.id}`]);
     setActionCounts({});
     setCurrentWeekUses({});
@@ -6472,6 +6607,7 @@ export default function Home() {
       mindset: stats.mindset,
       social: stats.social,
       familySupport: stats.familySupport,
+      familyProfileKey: generated.familyProfile.key,
       coachFavor: stats.coachFavor,
       peerFavor: stats.peerFavor,
       nationalRank,
@@ -6490,6 +6626,18 @@ export default function Home() {
           ),
         )
         .map(([rivalId, relation]) => ({
+          ...(rivals.find((rival) => rival.id === rivalId)
+            ? (() => {
+                const identity = seededRivalIdentity(
+                  rivals.find((rival) => rival.id === rivalId)!,
+                  seed,
+                );
+                return {
+                  personalityKey: identity.personalityKey,
+                  innerConflictKey: identity.innerConflictKey,
+                };
+              })()
+            : {}),
           name: relationshipName(rivalId),
           route: relation.route as
             | "dating"
@@ -6500,6 +6648,9 @@ export default function Home() {
           bond: relation.bond,
           trust: relation.trust,
           conflict: relation.conflict,
+          familiarity: relation.familiarity,
+          security: relation.security,
+          estrangement: relation.estrangement,
         })),
     };
     setPostCareerInput(input);
@@ -7050,6 +7201,7 @@ export default function Home() {
       nextCounts,
       nextWeekPhaseForEvents.isTraining,
       retiredRivalIds,
+      narrativeMemories,
     );
     const nextStoryTags = [...new Set([...storyTags, ...weeklyTags])];
     const teammateDeparture = nextWeekPhaseForEvents.isTraining
@@ -7838,6 +7990,22 @@ export default function Home() {
       setRetiredRivalWeeks((current) => ({ ...current, [rivalId]: week }));
     }
     setResolvedEvents((current) => [...current, pendingEvent.id]);
+    setNarrativeMemories((current) => [
+      ...current,
+      recordNarrativeMemory({
+        eventId: pendingEvent.id,
+        week,
+        choiceId: choice.id,
+        choiceTitle: choice.title,
+        result: choice.result,
+        tags: choice.effects.tags ?? [],
+        chainId: pendingEvent.causality?.chainId,
+        chainStep: pendingEvent.causality?.step,
+      }),
+    ]);
+    setStoryTags((current) => [
+      ...new Set([...current, `event-week:${pendingEvent.id}:${week}`]),
+    ]);
     setCurrentWeekMoments((current) => [
       ...current,
       {
@@ -9608,7 +9776,7 @@ export default function Home() {
                     </div>
                     <span
                       className="item-sprite store-sprite"
-                      style={itemSpriteStyle(item.atlasIndex)}
+                      style={shopItemSpriteStyle(item)}
                       aria-hidden="true"
                     />
                     <h2>{item.name}</h2>
@@ -10387,7 +10555,7 @@ export default function Home() {
           </button>
           {saveNotice && <small>{saveNotice}</small>}
         </div>
-        <span className="version">HUMANITY BUILD · 1.1</span>
+        <span className="version">HUMANITY BUILD · 1.1.2</span>
       </header>
       {saveDialog}
       {achievementUi}
@@ -10520,11 +10688,13 @@ export default function Home() {
             ...Object.values(trainingMilestoneEvents),
             ...weeklySocialEvents,
             ...linkedStoryDeveloperEvents,
+            ...causalLifeDeveloperCatalog,
             ...fantasyStoryDeveloperCatalog(seed),
             ...achievementStoryDeveloperCatalog(seed),
             ...supplementaryUnlockDeveloperCatalog(),
             ...retirementDeveloperCatalog(),
             ...pageFlowDeveloperCatalog(seed),
+            ...postCareerDeveloperCatalog(),
             ...rivals
               .filter((rival) => rival.scope === "school-peer")
               .flatMap((rival) => {
@@ -10757,9 +10927,16 @@ function RivalsPage({
                                 {relationshipRoute} · 亲近{" "}
                                 {formatNumber(relationship.bond)} · 张力{" "}
                                 {formatNumber(relationship.tension)}
-                                {relationship.route === "dating" && (
-                                  <> · 信任 {formatNumber(relationship.trust)}</>
-                                )}
+                                <> · 信任 {formatNumber(relationship.trust)}</>
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>关系底色</dt>
+                              <dd>
+                                熟悉 {formatNumber(relationship.familiarity)} · 安全感{" "}
+                                {formatNumber(relationship.security)} · 相互性{" "}
+                                {formatNumber(relationship.reciprocity)} · 疏离{" "}
+                                {formatNumber(relationship.estrangement)}
                               </dd>
                             </div>
                             <div>

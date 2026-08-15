@@ -23,6 +23,17 @@ export type DeepRelationship = {
   tension: number;
   romance: number;
   trust: number;
+  /** 见过多少真实侧面；比短期好感更慢增长，也更慢消失。 */
+  familiarity: number;
+  /** 对关系是否稳定、可预期的感受。 */
+  security: number;
+  /** 双方是否都在付出，50 为大致平衡。 */
+  reciprocity: number;
+  /** 长期沉默留下的距离，不会靠一次见面完全清零。 */
+  estrangement: number;
+  meaningfulInteractions: number;
+  lastMeaningfulWeek: number;
+  sharedMemories: string[];
   careDebt: number;
   conflict: number;
   route: RelationshipRoute;
@@ -76,6 +87,13 @@ export function defaultRelationship(seed = "", rivalId = ""): DeepRelationship {
     tension: hashSeed(`${seed}-${rivalId}-tension`) % 5,
     romance: 0,
     trust: 2,
+    familiarity: 3 + (hashSeed(`${seed}-${rivalId}-familiarity`) % 6),
+    security: 12,
+    reciprocity: 50,
+    estrangement: 0,
+    meaningfulInteractions: 0,
+    lastMeaningfulWeek: 0,
+    sharedMemories: [],
     careDebt: 0,
     conflict: 0,
     route: "neutral",
@@ -93,7 +111,11 @@ export function normalizeRelationship(
   seed = "",
   rivalId = "",
 ): DeepRelationship {
-  return { ...defaultRelationship(seed, rivalId), ...(value ?? {}) };
+  const normalized = { ...defaultRelationship(seed, rivalId), ...(value ?? {}) };
+  return {
+    ...normalized,
+    sharedMemories: [...(value?.sharedMemories ?? [])],
+  };
 }
 
 export function relationshipRouteLabel(relation: DeepRelationship) {
@@ -1738,7 +1760,18 @@ export function applyRelationshipChoice(
   choiceId: string,
   week: number,
 ) {
-  const next = { ...current, lastInteractionWeek: week, careDebt: Math.max(0, current.careDebt - 1) };
+  const next = {
+    ...current,
+    sharedMemories: [...current.sharedMemories],
+    lastInteractionWeek: week,
+    lastMeaningfulWeek: week,
+    meaningfulInteractions: current.meaningfulInteractions + 1,
+    familiarity: clamp(current.familiarity + 1.4),
+    estrangement: clamp(current.estrangement - 2.4),
+    careDebt: Math.max(0, current.careDebt - 1),
+  };
+  if (!next.sharedMemories.includes(choiceId))
+    next.sharedMemories = [...next.sharedMemories, choiceId].slice(-12);
   if (choiceId.startsWith("rel-daily-")) {
     const parts = choiceId.split("-");
     const tone = parts[2];
@@ -1754,34 +1787,46 @@ export function applyRelationshipChoice(
       next.romance = clamp(next.romance + (next.route === "crush" || next.route === "dating" ? 1.6 : 0));
       next.conflict = clamp(next.conflict - 1.2);
       next.careDebt = Math.max(0, next.careDebt - 1.4);
+      next.security = clamp(next.security + 2.2);
+      next.reciprocity = clamp(next.reciprocity + (next.reciprocity < 50 ? 1.8 : 0.6));
     } else if (tone === "light") {
       next.bond = clamp(next.bond + 2.2);
       next.trust = clamp(next.trust + 0.8);
       next.romance = clamp(next.romance + (next.route === "crush" || next.route === "dating" ? 1.2 : 0));
+      next.security = clamp(next.security + 0.7);
     } else if (tone === "honest") {
       next.bond = clamp(next.bond + 2.5);
       next.trust = clamp(next.trust + 3);
       next.romance = clamp(next.romance + (next.route === "crush" || next.route === "dating" ? 1.4 : 0));
       next.conflict = clamp(next.conflict - 1.4);
+      next.security = clamp(next.security + 2.8);
+      next.reciprocity = clamp(next.reciprocity + 1.2);
     } else if (tone === "practical") {
       next.bond = clamp(next.bond + 1.2);
       next.trust = clamp(next.trust + 1.8);
+      next.security = clamp(next.security + 1.4);
     } else if (tone === "boundary") {
       next.bond = clamp(next.bond + 1.5);
       next.trust = clamp(next.trust + 2.5);
       next.conflict = clamp(next.conflict - 1.8);
       next.careDebt = Math.max(0, next.careDebt - 1.2);
+      next.security = clamp(next.security + 2.4);
+      next.reciprocity = clamp(next.reciprocity + 1.5);
     } else if (tone === "avoid") {
       next.bond = clamp(next.bond - 0.8);
       next.trust = clamp(next.trust - 0.7);
       next.tension = clamp(next.tension + 1.4);
       if (next.route === "dating") next.careDebt = clamp(next.careDebt + 1, 0, 20);
+      next.security = clamp(next.security - 2.2);
+      next.reciprocity = clamp(next.reciprocity - 1);
     } else if (tone === "hurt") {
       next.bond = clamp(next.bond - 2.2);
       next.trust = clamp(next.trust - 2.4);
       next.tension = clamp(next.tension + 2.5);
       next.conflict = clamp(next.conflict + 3.5);
       if (next.route === "dating") next.careDebt = clamp(next.careDebt + 1.5, 0, 20);
+      next.security = clamp(next.security - 4);
+      next.reciprocity = clamp(next.reciprocity - 2);
     }
     if (personality === "reserved" && (tone === "honest" || tone === "boundary"))
       next.trust = clamp(next.trust + 0.6);
@@ -1819,13 +1864,18 @@ export function applyRelationshipChoice(
     next.trust = clamp(next.trust + 5);
     next.romance = clamp(next.romance + (next.route === "crush" ? 5 : 1));
     next.conflict = clamp(next.conflict - 2);
+    next.security = clamp(next.security + 2.5);
+    next.reciprocity = clamp(next.reciprocity + 1.2);
   } else if (practical) {
     next.bond = clamp(next.bond + 4);
     next.trust = clamp(next.trust + 4);
+    next.security = clamp(next.security + 1.5);
   } else if (avoided) {
     next.bond = clamp(next.bond - 2);
     next.trust = clamp(next.trust - 2);
     next.tension = clamp(next.tension + 4);
+    next.security = clamp(next.security - 3);
+    next.estrangement = clamp(next.estrangement + 2);
   }
   if (choiceId.startsWith("relationship-friend-")) {
     next.route = "friend";
@@ -1895,36 +1945,68 @@ export function settleRelationshipWeek(
   interacted: boolean,
   week: number,
 ) {
-  const next = { ...relation };
+  const next = { ...relation, sharedMemories: [...relation.sharedMemories] };
   if (interacted && relation.route === "neutral") {
     next.bond = clamp(next.bond + 2.8);
     next.trust = clamp(next.trust + 1.8);
+    next.familiarity = clamp(next.familiarity + 1.4);
+    next.security = clamp(next.security + 0.8);
+    next.estrangement = clamp(next.estrangement - 1.5);
+    next.meaningfulInteractions += 1;
+    next.lastMeaningfulWeek = week;
     next.lastInteractionWeek = week;
     return next;
   }
-  if (!(["dating", "friend", "crush"] as RelationshipRoute[]).includes(relation.route)) return relation;
+  if (!(["dating", "friend", "crush"] as RelationshipRoute[]).includes(relation.route)) {
+    const silentWeeks = week - next.lastInteractionWeek;
+    if (!interacted && silentWeeks >= 7 && next.familiarity > 0) {
+      const historyInertia = clamp(next.meaningfulInteractions / 18, 0, 0.55);
+      next.familiarity = clamp(next.familiarity - (0.35 - historyInertia * 0.25));
+      next.estrangement = clamp(next.estrangement + 0.25);
+    }
+    return next;
+  }
   if (interacted) {
     next.bond = clamp(next.bond + (next.route === "dating" ? 0.45 : 0.3));
     next.trust = clamp(next.trust + 0.3);
     next.careDebt = Math.max(0, next.careDebt - 1.2);
     next.conflict = Math.max(0, next.conflict - 0.5);
+    next.familiarity = clamp(next.familiarity + 0.65);
+    next.security = clamp(next.security + 0.45);
+    next.reciprocity = clamp(next.reciprocity + (next.reciprocity < 50 ? 0.5 : 0.15));
+    next.estrangement = clamp(next.estrangement - 1.1);
+    next.meaningfulInteractions += 1;
+    next.lastMeaningfulWeek = week;
     next.lastInteractionWeek = week;
   } else if (next.route === "dating") {
     next.careDebt = clamp(next.careDebt + 0.7, 0, 20);
     const silentWeeks = week - next.lastInteractionWeek;
+    const historyInertia = clamp(next.meaningfulInteractions / 22, 0, 0.5);
     if (silentWeeks >= 2) {
-      next.bond = clamp(next.bond - Math.min(2.7, 0.6 + (silentWeeks - 2) * 0.28));
-      next.trust = clamp(next.trust - Math.min(2.1, 0.35 + (silentWeeks - 2) * 0.22));
-      next.romance = clamp(next.romance - Math.min(1.4, 0.25 + (silentWeeks - 2) * 0.13));
+      next.bond = clamp(next.bond - Math.min(2.15, (0.5 + (silentWeeks - 2) * 0.2) * (1 - historyInertia)));
+      next.trust = clamp(next.trust - Math.min(1.8, (0.32 + (silentWeeks - 2) * 0.18) * (1 - historyInertia * 0.7)));
+      next.romance = clamp(next.romance - Math.min(1.25, 0.22 + (silentWeeks - 2) * 0.1));
+      next.security = clamp(next.security - Math.min(2.4, 0.55 + (silentWeeks - 2) * 0.2));
+      next.reciprocity = clamp(next.reciprocity - 0.35);
+      next.estrangement = clamp(next.estrangement + Math.min(1.8, 0.45 + silentWeeks * 0.08));
     }
     if (silentWeeks >= 4) next.conflict = clamp(next.conflict + 1.1);
   } else if (!interacted) {
     const silentWeeks = week - next.lastInteractionWeek;
-    if (silentWeeks >= (next.route === "friend" ? 3 : 5)) {
-      next.bond = clamp(next.bond - Math.min(next.route === "friend" ? 1.8 : 1.1, 0.3 + (silentWeeks - 3) * 0.16));
-      if (next.route === "friend") next.trust = clamp(next.trust - Math.min(1.2, 0.18 + (silentWeeks - 3) * 0.12));
-      if (next.route === "crush") next.romance = clamp(next.romance - 0.35);
+    const grace = next.route === "friend" ? 4 : 3;
+    const historyInertia = clamp(next.meaningfulInteractions / 20, 0, 0.58);
+    if (silentWeeks >= grace) {
+      next.bond = clamp(next.bond - Math.min(next.route === "friend" ? 1.35 : 1.05, (0.24 + (silentWeeks - grace) * 0.12) * (1 - historyInertia)));
+      next.familiarity = clamp(next.familiarity - Math.max(0.08, 0.32 - historyInertia * 0.35));
+      next.security = clamp(next.security - Math.min(1.4, 0.25 + silentWeeks * 0.08));
+      next.estrangement = clamp(next.estrangement + Math.min(1.2, 0.25 + silentWeeks * 0.06));
+      if (next.route === "friend") next.trust = clamp(next.trust - Math.min(0.9, (0.14 + (silentWeeks - grace) * 0.08) * (1 - historyInertia * 0.6)));
+      if (next.route === "crush") next.romance = clamp(next.romance - Math.min(0.8, 0.25 + silentWeeks * 0.04));
     }
+    if (next.route === "friend" && silentWeeks >= 16 && next.bond < 18 && next.familiarity < 16)
+      next.route = "neutral";
+    if (next.route === "crush" && silentWeeks >= 12 && next.romance < 8)
+      next.route = "neutral";
   }
   return next;
 }

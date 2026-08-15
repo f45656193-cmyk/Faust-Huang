@@ -8,6 +8,18 @@ export type DeveloperChangelogEntry = {
 /** Update this list before every public upload. Newest entry first. */
 export const developerChangelog: DeveloperChangelogEntry[] = [
   {
+    version: "1.1.2",
+    date: "2026-08-15",
+    title: "因果、记忆与高考支线更新",
+    items: [
+      "为连续事件加入明确的前置条件、延迟窗口与人物记忆：后续会引用玩家当时真正做过的选择，不再只按周数硬触发或用通用前情拼接。",
+      "关系状态扩展为熟悉、安全感、互惠与疏离等维度；恋人、挚友和朦胧好感长期缺少联系都会自然淡去，深交经历只能减缓而不能免除变化。",
+      "扩充高三期中、高考前夜、查分与强基笔试落选路线；四类家长和五类 NPC 性格分别拥有独立场景、选项与结果文本。",
+      "加入胶片相机、信纸、标本标签和旧公交卡套四件剧情道具，以及对应像素图、延迟支线与五项成就。",
+      "新增因果目录校验与自动试玩工具；本轮完成 500 次中后期人生模拟、关系衰减对照与全量回归测试。",
+    ],
+  },
+  {
     version: "1.1.1",
     date: "2026-08-15",
     title: "剧情逻辑与人物差异修订",

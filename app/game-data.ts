@@ -78,6 +78,8 @@ export type GameChoice = {
   effects: GameEffect;
 };
 
+import type { CausalEventRule } from "./narrative-causality";
+
 export type GameEvent = {
   id: string;
   phase: "opening" | "weekly" | "training" | "exam" | "ending";
@@ -105,6 +107,8 @@ export type GameEvent = {
     /** 同一事件群中的剧情顺序；数值越小越靠前。 */
     order?: number;
   };
+  /** 结构化因果关系；用于前置校验、延迟后果和自动断链检查。 */
+  causality?: CausalEventRule;
   trigger: {
     earliestWeek: number;
     latestWeek: number;

@@ -1120,6 +1120,24 @@ function chainEvent(config: ChainConfig, index: number): GameEvent {
         index === 0 ? "首节点需满足对应行为或状态前因" : "上一节点发生后等待 2–5 周",
       ].join(" · "),
     },
+    causality: {
+      chainId: config.id,
+      step,
+      requiresEvents:
+        index === 0
+          ? undefined
+          : [`chain-${config.id}-${String(step - 1).padStart(2, "0")}`],
+      minimumWeeksAfterEvents:
+        index === 0
+          ? undefined
+          : { [`chain-${config.id}-${String(step - 1).padStart(2, "0")}`]: 2 },
+      maximumWeeksAfterEvents:
+        index === 0
+          ? undefined
+          : { [`chain-${config.id}-${String(step - 1).padStart(2, "0")}`]: 18 },
+      followUpWeight: index >= 6 ? 1.7 : 1.45,
+      closesChain: step === 10,
+    },
     trigger: {
       earliestWeek: config.earliestWeek + index,
       latestWeek: 104,
@@ -1141,7 +1159,14 @@ function chainEvent(config: ChainConfig, index: number): GameEvent {
         title,
         preview: "",
         result: results[choiceIndex],
-        effects: { ...baseEffects, tags: [...(baseEffects.tags ?? []), currentTag] },
+        effects: {
+          ...baseEffects,
+          tags: [
+            ...(baseEffects.tags ?? []),
+            currentTag,
+            `chain-outcome:${config.id}:${step}:${choiceIds[choiceIndex] ?? `option-${choiceIndex + 1}`}`,
+          ],
+        },
       };
     }),
   };

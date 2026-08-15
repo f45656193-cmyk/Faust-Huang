@@ -1,4 +1,5 @@
 import { buildFutureEpilogue } from "./future-epilogues.ts";
+import type { GameEvent } from "./game-data.ts";
 
 export type PostSubject =
   | "语文"
@@ -46,6 +47,7 @@ export type PostCareerInput = {
   mindset: number;
   social: number;
   familySupport: number;
+  familyProfileKey?: "anxious" | "results" | "longterm" | "open";
   coachFavor: number;
   peerFavor: number;
   nationalRank: number | null;
@@ -60,6 +62,11 @@ export type PostCareerInput = {
     bond: number;
     trust: number;
     conflict: number;
+    familiarity?: number;
+    security?: number;
+    estrangement?: number;
+    personalityKey?: "reserved" | "warm" | "competitive" | "playful" | "curious";
+    innerConflictKey?: "abandonment" | "burden" | "achievement" | "distance" | "caretaking" | "family";
   }>;
 };
 
@@ -870,6 +877,181 @@ function internationalResult(state: PostCareerState, seed: string) {
   return { rank, medal } as const;
 }
 
+function familyMidtermScene(input: PostCareerInput): PostScene {
+  const profile = input.familyProfileKey ?? "results";
+  const scenes: Record<NonNullable<PostCareerInput["familyProfileKey"]>, PostScene> = {
+    anxious: {
+      kicker: "SENIOR YEAR · FAMILY",
+      title: "成绩单被拍进家族群以前，母亲先撤回了三次消息",
+      lead: "父亲一边说这只是第一次回班考试，一边把你与年级前列的分差写在纸上。两个人都想让你别紧张，问出口的却全是最坏情况。",
+      detail: "焦虑型家庭并非不愿支持，而是会把不确定自动翻译成危险。你可以给他们抓手，也可以拒绝替全家承担对未来的恐慌。",
+      choices: [
+        { id: "family-anxious-calendar", title: "把下一次模考前的计划贴在冰箱上", hint: "用可见进度换取暂时安定" },
+        { id: "family-anxious-boundary", title: "要求他们一周只问一次成绩", hint: "建立边界，也允许家里暂时不适应" },
+        { id: "family-anxious-confess", title: "承认自己也害怕追不回来", hint: "不再独自扮演最冷静的人" },
+      ],
+    },
+    results: {
+      kicker: "SENIOR YEAR · FAMILY",
+      title: "父亲把这次排名与退赛前的投入放进同一张表",
+      lead: "餐桌上没有人提高声音。家里只是逐项核算培训、停课、回班后的分数变化，仿佛只要算得足够清楚，就能判断过去两年究竟值不值得。",
+      detail: "结果导向型家庭愿意继续提供资源，但每一次投入都期待可见回报。你可以接受这套交换，也可以把人生中无法结算的部分留在表格之外。",
+      choices: [
+        { id: "family-results-target", title: "和他们约定下一次只检查三个具体目标", hint: "继续用结果协商，但缩小考核范围" },
+        { id: "family-results-cost", title: "把竞赛留下的能力和损失都写进去", hint: "拒绝只用一次排名清算过去" },
+        { id: "family-results-own", title: "不再申请额外课程，自己承担这段追赶", hint: "换取自主，也失去部分资源" },
+      ],
+    },
+    longterm: {
+      kicker: "SENIOR YEAR · FAMILY",
+      title: "母亲没有先看名次，而是问你最近能不能在十二点前睡着",
+      lead: "父亲摊开三条路线：普通高考、强基和暂时降低目标。每条路线都写了停止条件，没有哪一条被冠上坚持到底才算成功。",
+      detail: "长期规划型家庭更在意路线能否持续，却也可能把生活安排得过分完整。你需要决定是接受保护，还是为自己保留一部分不可预测。",
+      choices: [
+        { id: "family-longterm-review", title: "一起重写计划，把退出条件也保留下来", hint: "降低失控风险，不承诺唯一结局" },
+        { id: "family-longterm-space", title: "保留两晚不被安排的空白时间", hint: "牺牲一点效率，换回个人生活" },
+        { id: "family-longterm-ambition", title: "告诉他们你仍想冲一次更高的目标", hint: "主动选择风险，而非被计划保护" },
+      ],
+    },
+    open: {
+      kicker: "SENIOR YEAR · FAMILY",
+      title: "晚饭吃到一半，父母才问你愿不愿意谈这次考试",
+      lead: "他们没有准备结论，只说如果你今天不想谈，也可以等周末。那份宽松让人松一口气，也让所有决定重新落回你自己手里。",
+      detail: "包容沟通型家庭不会替你规定路线，但自由并不等于没有代价。你仍要把需要的帮助、愿意承担的风险和无法保证的结果说清楚。",
+      choices: [
+        { id: "family-open-ask", title: "主动请他们陪你复盘最差的一科", hint: "把支持变成具体行动" },
+        { id: "family-open-silence", title: "今晚不谈成绩，陪他们把饭吃完", hint: "保留喘息，问题留到周末" },
+        { id: "family-open-decision", title: "直接说出接下来想走的路线", hint: "获得自主，也承担选择后果" },
+      ],
+    },
+  };
+  return scenes[profile];
+}
+
+function gaokaoEveScene(input: PostCareerInput): PostScene {
+  const relation = [...(input.relationships ?? [])]
+    .filter((item) => ["dating", "friend", "crush"].includes(item.route))
+    .sort((a, b) =>
+      (b.bond + b.trust + (b.security ?? 0) - (b.estrangement ?? 0)) -
+      (a.bond + a.trust + (a.security ?? 0) - (a.estrangement ?? 0)),
+    )[0];
+  if (!relation) {
+    return {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: "宿舍熄灯以后，没有人再讨论押题",
+      lead: "你把准考证放进透明袋，检查两遍路线，然后独自坐在窗边听完操场最后一声哨响。过去两年认识的人散在不同考场，有些已经很久没有联系。",
+      detail: "今晚没有需要完成的关系任务。你可以复习、休息，也可以允许那些没有得到结论的经历暂时留在原处。",
+      choices: [
+        { id: "eve-alone-check", title: "再检查一次文具，然后按时关灯", hint: "稳定状态" },
+        { id: "eve-alone-letter", title: "给高一时的自己写一封不寄出的信", hint: "整理经历，可能睡得更晚" },
+      ],
+    };
+  }
+  const name = relation.name;
+  const scenes: Record<NonNullable<typeof relation.personalityKey>, PostScene> = {
+    reserved: {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: `${name}发来一张没有批注的考场路线图`,
+      lead: "消息下面只有一句“确认过了”。你知道TA大概删掉了更多话；过去越重要的时刻，TA越习惯把关心压缩成不会给人添麻烦的格式。",
+      detail: "你们之间的沉默曾经可靠，也曾经让误会存活太久。高考前夜，你可以接受这份克制，或者邀请TA多说一句。",
+      choices: [
+        { id: "eve-reserved-thanks", title: "回复收到，再把自己的路线也发过去", hint: "用同样克制的方式互相确认" },
+        { id: "eve-reserved-call", title: "拨过去，问TA现在真正紧张什么", hint: "打破沉默，也可能触碰旧事" },
+      ],
+    },
+    warm: {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: `${name}把早餐、铅笔和雨伞逐项问了一遍`,
+      lead: "TA记得你容易在紧张时忘记吃东西，也记得你讨厌别人把照顾说成命令。最后一条消息停在“还有什么需要我做”，没有替你决定答案。",
+      detail: "被照顾可以让人安定，也可能再次唤起亏欠。你需要回应的不是一张物品清单，而是两个人是否仍允许彼此伸手。",
+      choices: [
+        { id: "eve-warm-receive", title: "说清自己需要什么，也问TA需要什么", hint: "让关心保持双向" },
+        { id: "eve-warm-rest", title: "告诉TA都准备好了，催TA先去睡觉", hint: "温柔收住对话，不继续互相操心" },
+      ],
+    },
+    competitive: {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: `${name}发来一句：明天谁都别输给一道不会的题`,
+      lead: "这不像祝福，更像你们熟悉的挑战。TA没有问你的目标分，也没有拿最后一次模考比较，只把真正的对手缩小成考场里那一刻的慌乱。",
+      detail: "竞争曾让你们靠近，也曾把脆弱变成不能承认的败局。今晚可以继续用战书壮胆，也可以第一次把胜负放下。",
+      choices: [
+        { id: "eve-competitive-pact", title: "回一句：考完再来对答案", hint: "保留熟悉的火花" },
+        { id: "eve-competitive-truth", title: "承认自己害怕发挥失常", hint: "放下逞强，关系可能更稳" },
+      ],
+    },
+    playful: {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: `${name}给准考证照片加了一个荒唐的“SSR”边框`,
+      lead: "你笑出声以后，TA才补发一句很短的认真话：如果睡不着就回一个句号。那个玩笑没有否认紧张，只是替你们留了一扇不必解释太多的门。",
+      detail: "幽默能让夜晚轻一点，却不能代替真正回应。你可以接住玩笑，也可以让句号后面出现一段不那么轻松的谈话。",
+      choices: [
+        { id: "eve-playful-meme", title: "回敬一张更离谱的表情包，然后关机", hint: "让轻松停在刚好的位置" },
+        { id: "eve-playful-dot", title: "发出那个句号，承认自己还没睡", hint: "允许玩笑之后出现真话" },
+      ],
+    },
+    curious: {
+      kicker: "JUNE · THE NIGHT BEFORE",
+      title: `${name}问：如果明天的分数不定义你，它还会改变什么？`,
+      lead: "TA没有立即追问答案，只把问题留在聊天框里。你们过去常靠问题接近彼此，也曾因为一直分析而错过简单地陪伴。",
+      detail: "高考当然会改变录取，却无法一次回答人生。你可以继续讨论，也可以告诉TA今晚不需要把一切想明白。",
+      choices: [
+        { id: "eve-curious-answer", title: "认真回答会改变的、不会改变的部分", hint: "整理边界，也消耗一点睡眠" },
+        { id: "eve-curious-pause", title: "约定考完再谈，今晚只互道晚安", hint: "让问题暂时没有答案" },
+      ],
+    },
+  };
+  return scenes[relation.personalityKey ?? "reserved"];
+}
+
+function scoreReleaseScene(state: PostCareerState, input: PostCareerInput): PostScene {
+  const total = state.gaokao?.total.toFixed(1) ?? "—";
+  const rank = state.gaokao?.provinceRank ?? "—";
+  const profile = input.familyProfileKey ?? "results";
+  const scenes: Record<NonNullable<PostCareerInput["familyProfileKey"]>, PostScene> = {
+    anxious: {
+      kicker: "JUNE · SCORE RELEASE",
+      title: "查询页面刚跳出来，家里三个人同时开始算另一种可能",
+      lead: `总分 ${total}，全省约第 ${rank} 名。母亲先问有没有复核机会，父亲已经打开往年位次表；他们并非不接受结果，只是还没学会在不确定结束时停下来。`,
+      detail: "你可以和他们一起核对，也可以先把电脑合上。",
+      choices: [
+        { id: "score-anxious-check", title: "陪他们核对完必要信息，再停止反复刷新", hint: "给焦虑一个边界" },
+        { id: "score-anxious-walk", title: "先离开房间，到楼下走一圈", hint: "保护情绪，家里会暂时不安" },
+      ],
+    },
+    results: {
+      kicker: "JUNE · SCORE RELEASE",
+      title: "父亲念出总分，随后问这个位次能兑现哪些选择",
+      lead: `总分 ${total}，全省约第 ${rank} 名。过去的培训、退赛与追赶被暂时搁置，餐桌上只剩招生线、专业和录取概率。`,
+      detail: "结果终于出现，却仍然可以被解释成收益、损失或一段已经完成的经历。",
+      choices: [
+        { id: "score-results-plan", title: "先按位次列学校，不评价过去值不值得", hint: "把结算推迟到情绪平稳以后" },
+        { id: "score-results-refuse", title: "拒绝立刻复盘两年投入", hint: "守住感受，也会产生冲突" },
+      ],
+    },
+    longterm: {
+      kicker: "JUNE · SCORE RELEASE",
+      title: "父母把提前准备的三份志愿方案依次拿了出来",
+      lead: `总分 ${total}，全省约第 ${rank} 名。方案没有哪一份写着失败，只标了风险、城市、专业和以后改变方向的成本。`,
+      detail: "规划让结果迅速获得位置，也可能让你还没来得及感受就进入下一项任务。",
+      choices: [
+        { id: "score-longterm-plan", title: "先确认方向，再约定明天继续讨论", hint: "利用准备，也保留今晚" },
+        { id: "score-longterm-feel", title: "请他们暂时收起方案，听你说完这一刻", hint: "让情绪进入长期规划" },
+      ],
+    },
+    open: {
+      kicker: "JUNE · SCORE RELEASE",
+      title: "父母看完分数，没有替你决定该笑还是该难过",
+      lead: `总分 ${total}，全省约第 ${rank} 名。母亲只问你想先吃饭、先看位次，还是先一个人待会儿；选择下一步的权利依旧在你手里。`,
+      detail: "宽松没有消除现实门槛，却允许你用自己的顺序接受结果。",
+      choices: [
+        { id: "score-open-together", title: "请他们一起打开位次表", hint: "共同面对现实信息" },
+        { id: "score-open-alone", title: "先独自消化，再回来谈志愿", hint: "保留私人空间" },
+      ],
+    },
+  };
+  return scenes[profile];
+}
+
 export function getPostScene(
   state: PostCareerState,
   input: PostCareerInput,
@@ -995,6 +1177,7 @@ export function getPostScene(
         },
       ],
     },
+    "family-midterm": familyMidtermScene(input),
     "selection-experiment": {
       kicker: "NATIONAL TEAM · EXPERIMENT",
       title: "第二次选拔只看手上功夫",
@@ -1135,6 +1318,7 @@ export function getPostScene(
         },
       ],
     },
+    "gaokao-eve": gaokaoEveScene(input),
     gaokao: {
       kicker: "JUNE · GAOKAO",
       title: "六张试卷，七百五十分",
@@ -1150,6 +1334,7 @@ export function getPostScene(
         },
       ],
     },
+    "score-release": scoreReleaseScene(state, input),
     "strong-written": {
       kicker: "STRONG FOUNDATION · WRITTEN",
       title:
@@ -1173,6 +1358,17 @@ export function getPostScene(
           title: "优先攻克高区分度题目",
           hint: "波动更大，适合专项准备充分的玩家",
         },
+      ],
+    },
+    "strong-setback": {
+      kicker: "STRONG FOUNDATION · AFTERMATH",
+      title: "面试楼仍然开放，但你的准考证不能再进入下一道门",
+      lead: `笔试排名第 ${state.strongResult?.writtenRank ?? "—"} / ${state.strongResult?.writtenParticipants ?? "—"}。复试线落在你前面，普通志愿仍会继续，今天却确实有一条路在这里结束。`,
+      detail: "落选不会自动转化成成长，也不必被解释成整个高中的失败。你只需要决定怎样离开这栋楼。",
+      choices: [
+        { id: "strong-setback-review", title: "去公告栏抄下分段与复试线", hint: "保留事实，暂时不评价自己" },
+        { id: "strong-setback-peer", title: "和同样落选的考生一起去车站", hint: "交换经历，不独自消化" },
+        { id: "strong-setback-leave", title: "把准考证收进包里，直接回家", hint: "停止追问，把精力留给普通志愿" },
       ],
     },
     "strong-interview": {
@@ -1356,7 +1552,7 @@ export function advancePostCareer(
         san: -7,
         mindset: -1,
         result:
-          "你用一个学期把课堂、作业和考试重新接上。成绩明显恢复，但有几周你只是机械地完成日程。",
+          "你把缺失章节按课堂顺序重新拆开，每天补一小段，再用周测确认哪些内容真正接上。成绩从最初的大片空白慢慢恢复，但最忙的几周里，你只记得起床、上课、写卷子和关灯，甚至说不清自己是否仍在理解。追赶确实缩短了差距，也让这个学期几乎没有留下成绩以外的记忆。",
       });
     if (choiceId === "bridge-life")
       return update(base, {
@@ -1366,7 +1562,7 @@ export function advancePostCareer(
         mindset: 4,
         social: 4,
         result:
-          "你重新参加班级活动，也学会不再把每一次休息解释成浪费。成绩恢复得慢，却第一次像普通高中生那样生活。",
+          "你重新参加班会、值日和那场并不重要的班级球赛，也允许晚饭后与同学多走一圈。常规成绩恢复得比冲刺路线慢，老师几次提醒你不要把回班适应当作无限期缓冲；但当同学不再先问竞赛结果、而是自然给你留座时，你第一次重新拥有一种不需要奖牌或退赛理由才能进入的普通高中生活。",
       });
     return update(base, {
       stage: nextStage,
@@ -1374,7 +1570,7 @@ export function advancePostCareer(
       san: -2,
       mindset: 2,
       result:
-        "你没有突然逆袭，只是把每周欠下的内容一点点补完。到了期末，老师已经不再把你称作“刚退赛的那个”。",
+        "你按照课堂进度补最必要的章节，遇到无法一次填平的断层便记进下周，而不是熬夜把计划伪装成已经完成。提升没有戏剧性，月考排名甚至反复过几次；可到期末，老师点名时不再附带‘刚退赛’的解释，同学借笔记也不再刻意照顾你的缺课经历。你仍然落后，只是不再被过去的路线单独命名。",
     });
   }
   if (state.stage === "return") {
@@ -1385,7 +1581,7 @@ export function advancePostCareer(
         san: -10,
         mindset: -2,
         result:
-          "两周里你几乎住在书桌前。卷子补完了，但第三个清晨醒来时，你一时想不起今天是星期几。",
+          "你按年份把积压卷子排成几摞，连续两周只在吃饭和洗漱时离开书桌。空白页迅速减少，陌生章节也获得了最初轮廓；第三个清晨醒来时，你却盯着闹钟很久才想起今天有没有早读。短期追赶证明你仍能承受高强度，也暴露这套方法无法长期复制：卷子补完以后，身体已经开始替计划收取欠款。",
       });
     if (choiceId === "return-rest")
       return update(state, {
@@ -1394,7 +1590,7 @@ export function advancePostCareer(
         san: 11,
         mindset: 5,
         result:
-          "你先把睡眠从凌晨拉回午夜。进度仍落后，但重新坐进教室时，至少能听懂老师正在说什么。",
+          "你没有立刻追那摞卷子，而是先把入睡时间从凌晨一点点拉回午夜，恢复早餐和固定起床。两周后，进度与同学相比仍然难看，家里也几次怀疑你是否太松；但重新坐进教室时，你终于能连续听完一节课，不再靠意志维持睁眼。恢复没有替你补知识，却让之后每一小时学习重新具备被真正吸收的可能。",
       });
     return update(state, {
       stage: "first-review",
@@ -1403,7 +1599,7 @@ export function advancePostCareer(
       mindset: 3,
       social: 2,
       result:
-        "班主任删掉了不可能完成的部分，只留下每天必须补齐的任务。计划不漂亮，却真的执行了下去。",
+        "班主任把你原先写满整页的计划删去大半，只保留当天课堂、最薄弱章节和一项可以检查的订正。你起初觉得这份安排过于保守，几周后却第一次没有靠周末通宵偿还欠账。计划既没有制造迅速逆袭，也没有把任何科目彻底放弃；它的价值只是每天都能被完成，并在做不到时允许你准确指出问题出在哪里。",
     });
   }
   if (state.stage === "first-review") {
@@ -1417,7 +1613,7 @@ export function advancePostCareer(
         san: -7,
         strongPrep: 4,
         result:
-          "数学和理综开始明显回升。语文老师在作文本上写了一句：别把所有希望都压在理科。",
+          "你把大部分额外时间投向数学、物理和化学，熟悉的推理节奏很快重新出现，理综排名也比其他科目先回升。与此同时，语文作文仍在相同区间徘徊，英语阅读速度甚至因长期搁置继续下降。语文老师在作文本末尾写下‘别把所有希望都压在理科’，那句话没有否定你的优势，只提醒总分会替每一门被忽略的课留下位置。",
       });
     if (choiceId === "review-language")
       return update(state, {
@@ -1426,7 +1622,7 @@ export function advancePostCareer(
         san: -4,
         mindset: 2,
         result:
-          "单词和作文素材没有竞赛题那样刺激，却一点点填上总分里最沉默的缺口。",
+          "你开始每天固定背单词、整理作文素材，并把过去总想跳过的长阅读完整计时。它们没有竞赛题那种突然看懂结构的兴奋，进步也常常只能在几次考试后的均分里确认；可那些长期沉默的失分终于不再被一句‘文科靠积累’带过。理科推进稍慢了一些，换来的是总分不再完全依赖某一张卷子的发挥。",
       });
     return update(state, {
       stage: nextStage,
@@ -1434,7 +1630,7 @@ export function advancePostCareer(
       san: -5,
       mindset: 1,
       result:
-        "你没有让任何一科彻底掉队。错题本越来越厚，但至少每一页都知道为什么被写进去。",
+        "你按六科分别建立错题索引，不要求每门都成为优势，只把重复失分的问题标成必须解决。错题本很快变厚，进度看上去远不如专攻一科漂亮；但每一页都有来源、原因和再次检查的日期，不再只是抄写正确答案。均衡路线没有给你突出的单科排名，却逐渐抬高了任何一张试卷都不至于崩塌的下限。",
     });
   }
   if (state.stage === "selection-theory") {
@@ -1471,35 +1667,105 @@ export function advancePostCareer(
     );
   }
   if (state.stage === "midterm") {
-    const nextStage = state.nationalSelection.eligible
+    const resumeStage = state.nationalSelection.eligible
       ? "selection-experiment"
       : "mock1";
+    const withFamilyConversation = { ...state, resumeStage };
     if (choiceId === "midterm-pressure")
-      return update(state, {
-        stage: nextStage,
+      return update(withFamilyConversation, {
+        stage: "family-midterm",
         gains: allGain(4.8),
         san: -9,
         mindset: -4,
         result:
-          "名次确实上升了，代价是你开始把每次小失误都理解成退步。那张排名表像一块持续亮着的屏幕。",
+          "你把排名贴在桌前，每次想停下来时都先看一眼与前列的距离。额外套卷确实让名次上升，几个长期空白也被高强度重复强行填住；代价是一次计算错误都会被你解释成重新下滑，吃饭和睡眠也开始围绕下次考试让路。那张纸没有说话，却像持续亮着的屏幕，让任何一天都难以真正结束。",
       });
     if (choiceId === "midterm-talk")
-      return update(state, {
-        stage: nextStage,
+      return update(withFamilyConversation, {
+        stage: "family-midterm",
         gains: allGain(3.2),
         san: -2,
         mindset: 3,
         social: 5,
         result:
-          "同学的笔记替你省下了许多无效整理。你也第一次承认，回班并不意味着必须一个人补完全部空白。",
+          "几名同学把笔记、课堂录音和老师补充的题单分给你，也坦白其中有些章节他们自己同样没弄懂。你们用午休交换讲解，省下了大量重新誊写的时间，却也需要迁就彼此节奏。回班不再是一场独自证明适应能力的考试；接受别人帮助会暴露缺口，也让关系从礼貌照顾变成真正共同完成任务。",
       });
-    return update(state, {
-      stage: nextStage,
+    return update(withFamilyConversation, {
+      stage: "family-midterm",
       gains: allGain(4),
       san: -4,
       mindset: 2,
       result:
-        "复盘没有制造奇迹，但最差的那门课终于不再继续下坠。总分开始变得可以预测。",
+        "你按失分原因逐科拆开成绩，先处理最差科目里反复出现的基础题，而没有被最高分那门带来的安全感转移注意。下一次小测仍然没有显著逆袭，却不再出现整章空白，总分波动也慢慢收窄。复盘没有改变过去缺课的事实，只让问题从‘来不及了’变成几项能够判断是否改善的具体任务。",
+    });
+  }
+  if (state.stage === "family-midterm") {
+    const nextStage = state.resumeStage ?? "mock1";
+    const familyChoices: Record<string, Parameters<typeof update>[1]> = {
+      "family-anxious-calendar": {
+        stage: nextStage,
+        gains: allGain(1.5), familySupport: 3, san: -2, mindset: 1,
+        result: "你没有承诺下一次一定考到多少名，只把每天能完成的任务、允许休息的晚上和需要求助的节点写清。计划贴上冰箱后，父母仍会忍不住经过时多看一眼，却终于不再每顿饭都重新询问同一个最坏结果。那张纸也约束了你：如果连续两周无法执行，就必须承认原路线需要改变。",
+      },
+      "family-anxious-boundary": {
+        stage: nextStage,
+        familySupport: -1, san: 4, mindset: 2,
+        result: "父亲起初认为一周一次太少，母亲则问突发情况算不算例外。你们在争执中把‘关心’拆成询问、提醒和替你作决定三件不同的事，最后约定周日晚饭后统一谈。前几天他们明显不习惯，你也几次想主动汇报来安抚气氛；但沉默没有酿成灾难，家里开始学习让焦虑停留在成年人自己手里。",
+      },
+      "family-anxious-confess": {
+        stage: nextStage,
+        familySupport: 4, san: 2, mindset: -1,
+        result: "你承认自己并不像表现出来的那样笃定，也害怕最后既失去竞赛路线，又追不回常规成绩。父母安慰得并不熟练，母亲甚至立刻红了眼眶，谈话一度比原先更乱。可从这晚起，家里不再把你当作负责提供确定答案的人；三个人都害怕，却终于可以分别承担自己的那一份。",
+      },
+      "family-results-target": {
+        stage: nextStage,
+        gains: allGain(2.2), familySupport: 2, san: -3, mindset: 2,
+        result: "你把下一阶段缩成三个目标：最弱科不再下滑、总分稳定完成两套卷、睡眠不连续三天低于六小时。父亲删掉了原表里那些无法控制的名次要求，保留月底复盘。交换仍然存在，只是从‘证明过去值得’变成‘验证当前方法是否有效’；你得到继续投入的资源，也接受届时必须面对记录。",
+      },
+      "family-results-cost": {
+        stage: nextStage,
+        familySupport: 1, san: -1, mindset: 3,
+        result: "你把竞赛带来的知识、推理能力、朋友和疲惫逐项写进同一张表，也把缺课、花费与错过的普通生活留下。表格因此失去了清晰的盈亏结论，父亲看了很久，最后承认有些东西只能描述，不能折算成一次考试的回报率。你们没有因此达成完全一致，却停止拿眼前排名替过去两年作唯一判决。",
+      },
+      "family-results-own": {
+        stage: nextStage,
+        gains: allGain(1.2), familySupport: -3, san: 2, mindset: 5,
+        result: "你谢绝了家里准备购买的新课程，决定先用学校现有资料完成追赶。父母把这理解为你愿意为选择负责，也担心这是赌气。接下来的复习少了一条昂贵捷径，却多出一块不必每次用成绩续费的自主空间；如果效果不好，你不能再简单归因于资源不足。",
+      },
+      "family-longterm-review": {
+        stage: nextStage,
+        gains: allGain(1.8), familySupport: 3, san: 2, mindset: 3,
+        result: "你们把计划重新分成继续条件、调整条件和停止条件。任何一次失利都不会自动结束路线，连续失眠、长期无法完成基础任务也不再被写成意志问题。那份文件没有削弱目标，反而使继续冲刺第一次不需要假装没有退路。父母答应执行同一套规则，你也失去了临时改变口径逃避复盘的余地。",
+      },
+      "family-longterm-space": {
+        stage: nextStage,
+        gains: allGain(0.8), familySupport: 1, san: 6, social: 2, mindset: 2,
+        result: "你坚持在周计划里留下两晚空白，不补课、不做整套卷，也不需要把休息转化成某种成长任务。父亲担心它们最终被手机吞掉，母亲则提出只保留一晚，你没有继续让步。几周后成绩推进稍慢，但那两晚让你重新知道晚风、散步和与同学闲聊并非复习失败后的补偿。",
+      },
+      "family-longterm-ambition": {
+        stage: nextStage,
+        gains: allGain(2.7), familySupport: 1, san: -6, mindset: 4,
+        result: "你告诉父母，自己明白更稳妥的路线在哪里，却仍想为更高目标承担一次可控风险。家里没有立刻赞同，而是要求你亲自写出代价和停止线。这个决定不再是被期待推着前进，也不是靠反抗证明独立；接下来每一次加码都属于你主动签下的责任。",
+      },
+      "family-open-ask": {
+        stage: nextStage,
+        gains: allGain(1.6), familySupport: 4, san: 1, mindset: 2,
+        result: "你把最差一科的卷子摊开，请父母先听你解释哪里真的不会、哪里只是时间不够。他们帮不上具体题目，却替你联系老师、调整家务安排，也答应不把这次求助扩大成全面接管。支持终于从一句‘都听你的’变成几件可执行的小事，而你也必须在需要时明确开口。",
+      },
+      "family-open-silence": {
+        stage: nextStage,
+        familySupport: 1, san: 5, social: 1,
+        result: "你说今晚不想再看成绩，父母便把手机收起来，继续谈菜市场、亲戚家的猫和周末要修的水龙头。问题没有被解决，却第一次没有霸占整顿晚饭。到了周末，你仍需要主动重启谈话；自由没有替你做决定，只为决定到来以前保留了一段完整的普通生活。",
+      },
+      "family-open-decision": {
+        stage: nextStage,
+        gains: allGain(2), familySupport: 2, san: -2, mindset: 5,
+        result: "你直接说出接下来准备主攻的科目、愿意承担的排名波动，以及如果状态再次恶化会怎样调整。父母没有用赞同替你兜底，只确认需要提供哪些支持。被允许自己选择并不轻松，因为以后很难把代价归给谁的强迫；但这条路线第一次完整地使用了你的口吻。",
+      },
+    };
+    return update({ ...state, resumeStage: undefined }, familyChoices[choiceId] ?? {
+      stage: nextStage,
+      result: "谈话没有得到统一结论，却把下一阶段的边界第一次说成了可以执行的约定。家里仍会担心，你也没有保证成绩必然回升；至少之后再出现分歧时，所有人需要指出究竟是哪项计划、哪条界限或哪次失约出了问题，而不能重新把过去两年的每个选择混在一起清算。",
     });
   }
   if (state.stage === "selection-experiment") {
@@ -1549,7 +1815,7 @@ export function advancePostCareer(
         strongPrep: 12,
         interviewPrep: 2,
         result:
-          "你开始接触强基数学和化学题。它们没有立刻提高一模总分，却让校测不再只是报名页面上的两个字。",
+          "你在高考套卷之外加入强基数学和化学题，最初几次几乎无法完整写出过程，只能把陌生方法逐项拆回基础。它们没有立刻提高一模总分，还占用了原本可以补语文和英语的时间；但校测终于从招生简章上的抽象门槛变成一种可以准备、也可能真实淘汰你的考试。你选择提前承担这部分风险。",
       });
     if (choiceId === "mock1-recover")
       return update(state, {
@@ -1558,7 +1824,7 @@ export function advancePostCareer(
         san: 9,
         mindset: 5,
         result:
-          "减少套卷后，排名没有立刻上升。但你终于能在一道难题之后继续完成整张试卷。",
+          "你减少整套卷数量，先把睡眠拉回稳定区间，并练习在一道题卡住时主动跳过。排名因此没有继续快速上升，家里也担心你在最关键阶段放松；可下一次模拟里，你第一次没有让前半场的失误拖垮后面所有科目。恢复并未增加知识上限，却把原本容易连锁崩塌的发挥重新收回可控范围。",
       });
     return update(state, {
       stage: "application",
@@ -1566,7 +1832,7 @@ export function advancePostCareer(
       san: -5,
       mindset: 2,
       result:
-        "你没有追逐最好看的单科，而是把所有明显缺口逐一补到不再致命。班主任第一次说，这个总分可以谈志愿了。",
+        "你放弃继续抬高最有把握的单科，把时间移向那些每次都会稳定丢分的章节。成绩单因此没有出现特别醒目的高分，最差科目却逐渐从拖垮总分的位置退开。班主任第一次拿出往年位次表，说这个分数已经可以开始谈志愿；那不是胜利宣告，只意味着你的选择终于不再只剩下孤注一掷。",
     });
   }
   if (state.stage === "application") {
@@ -1651,7 +1917,7 @@ export function advancePostCareer(
             san: -6,
             interviewPrep: 14,
             result:
-              "你没有去刷一场并不存在的破格笔试，而是反复核对材料、整理竞赛经历并练习面试表达。高考推进因此稍慢。",
+              "你确认这条破格路线通过审核后并不存在需要准备的笔试，于是没有为了安心去刷一套虚构考纲，而是核对证明材料、整理竞赛经历，并练习怎样说明兴趣而不把回答背成获奖陈述。高考六科推进因此稍慢，面试准备却第一次针对真实流程展开。少做题并非偷懒，而是拒绝把努力浪费在不存在的门槛上。",
           })
         : update(state, {
             stage: "mock2",
@@ -1660,7 +1926,7 @@ export function advancePostCareer(
             strongPrep: 18,
             interviewPrep: 3,
             result:
-              "强基题开始有了固定解法，高考语文和英语却几乎停在原地。你接受了这次交换。",
+              "你继续投入强基数学和化学，逐渐能识别高区分度题目的常见入口，模拟笔试也不再完全依靠临场猜测。代价同样清楚：语文积累和英语阅读几乎停在原处，高考总分的安全余量被进一步压缩。你没有把这称作兼顾，而是承认自己正在用一部分稳定性交换校测竞争力，并愿意承担落空时的后果。",
           });
     if (choiceId === "second-health")
       return update(state, {
@@ -1669,7 +1935,7 @@ export function advancePostCareer(
         san: 8,
         mindset: 6,
         result:
-          "你删掉了那些只会制造焦虑的任务。进度没有冲刺，却很久没有在半夜因为一道题醒来。",
+          "你删掉重复套卷和无法复盘的偏题，只保留真正不会的专题、正常作息和固定休息。短期进度明显慢下来，周围冲刺的节奏也偶尔让你怀疑是否过于保守；但你很久没有再在半夜因为一道题醒来，白天也能完整完成计划。守住健康没有保证更高分，只降低了最重要几天彻底失常的概率。",
       });
     return update(state, {
       stage: "mock2",
@@ -1677,36 +1943,54 @@ export function advancePostCareer(
       san: -6,
       mindset: 2,
       result:
-        "六科总分继续缓慢上升。强基准备没有额外推进，但高考这条底线变得更可靠。",
+        "你把二轮时间重新集中到高考六科，按专题解决仍会重复失分的问题，没有再额外追逐强基难题。总分继续缓慢上升，专项校测准备则停在原先水平；这并不是同时保住所有机会，而是明确把最可靠的录取底线放在前面。每一小时都被用在更可能兑现的地方，也接受如果校测失利便没有临时补救。",
     });
   }
   if (state.stage === "mock2") {
     if (choiceId === "mock2-last-sprint")
       return update(state, {
-        stage: "gaokao",
+        stage: "gaokao-eve",
         gains: allGain(5.2),
         san: -13,
         mindset: -4,
         result:
-          "最后一个月的分数确实又涨了一截。与此同时，你开始依靠闹钟提醒自己吃饭和睡觉。",
+          "你把最后一个月排到几乎没有空隙，错题、套卷和背诵按小时轮换，模拟总分也确实又涨了一截。与此同时，吃饭和睡觉开始依靠闹钟提醒，稍微停下来便会产生强烈的落后感。冲刺为你换来一部分仍可能增长的分数，也把临场状态压在更窄的边缘；现在谁也不能保证这笔交换会在正式考试中兑现。",
       });
     if (choiceId === "mock2-accept")
       return update(state, {
-        stage: "gaokao",
+        stage: "gaokao-eve",
         gains: allGain(2.6),
         san: 7,
         mindset: 8,
         result:
-          "你不再追逐每一道怪题。放弃几分理论上可能得到的分数后，整张卷子反而变得可以完成。",
+          "你停止收集来源不明的怪题，只按正式考试难度维持手感，并接受某些高区分度题可能永远不会完整掌握。理论上可以争取的几分被主动放下，换来的是每张卷子都能按顺序完成、每晚也知道何时结束。接受当前水平不是宣称已经足够，而是不再让极小概率的收益占用全部注意力。",
       });
     return update(state, {
-      stage: "gaokao",
+      stage: "gaokao-eve",
       gains: allGain(4.1),
       san: -4,
       mindset: 4,
       result:
-        "最后一次模拟按正式作息结束。没有奇迹，也没有崩盘，这种平静本身已经很珍贵。",
+        "你完全按照正式高考的起床、进场、午休和答题节奏完成最后一次模拟，遇到卡题便执行预先约定的跳题规则。成绩没有出现鼓舞人的奇迹，也没有因一次失误连续崩盘。复盘结束后你只改动少量细节，没有推翻整套计划；在考前充满传言和临时技巧的几周里，这种可重复的平静本身已经是一项真实能力。",
     });
+  }
+  if (state.stage === "gaokao-eve") {
+    const effects: Record<string, { san: number; mindset: number; social?: number; result: string }> = {
+      "eve-alone-check": { san: 4, mindset: 4, result: "你把准考证、身份证和文具按使用顺序放好，设完闹钟便关掉手机。黑暗里仍有很多念头经过，却没有一个被允许重新打开整套复习计划。你没有获得临考秘诀，只用一晚正常睡眠承认：明天能控制的事情已经不多，而休息本身也是最后一项准备。" },
+      "eve-alone-letter": { san: 1, mindset: 6, result: "你从高一第一次走进竞赛教室写起，没有替过去的自己总结教训，也没有保证一切最终值得。信写到凌晨，里面同时留下兴奋、难堪、喜欢过的人和没能完成的计划。合上本子时你有些疲惫，却不再需要明天的分数替整段经历提供唯一解释。" },
+      "eve-reserved-thanks": { san: 3, mindset: 4, social: 1, result: "你回复收到，又把自己的路线和集合时间发过去。两张地图并排躺在聊天记录里，没有人继续添加煽情的话。那份克制仍是你们最熟悉的语言：它不保证亲密永远存在，却在重要时刻给出可验证的在场。确认彼此都准备好后，你们几乎同时结束了对话。" },
+      "eve-reserved-call": { san: 1, mindset: 5, social: 2, result: "电话接通后沉默了好几秒，TA才承认最害怕的不是难题，而是考完之后很多关系会失去自然见面的理由。你没有急着许诺永远联系，只和TA约定成绩出来前先吃一次饭。那些删掉的话终于拥有声音，也使离别从模糊预感变成可以共同面对的事实。" },
+      "eve-warm-receive": { san: 4, mindset: 4, social: 2, result: "你说自己需要明早一句叫醒，也认真问TA有没有忘带东西。对话第一次没有停在单方面照料：TA承认也在紧张，请你进考场前回一个表情。你们各自收下对方能给的小帮助，没有谁因为需要别人而欠下一笔必须用成绩偿还的债。" },
+      "eve-warm-rest": { san: 5, mindset: 3, result: "你逐项告诉TA都准备好了，然后反过来催TA别再检查第四遍。TA发来一个不太放心的晚安，终于没有继续追问。照顾在这里停住，不是因为在意变少，而是你们开始相信对方可以带着一点遗漏进入明天，不必由另一个人负责消除全部风险。" },
+      "eve-competitive-pact": { san: 2, mindset: 6, result: "你回了一句考完再对答案，又约定谁先在群里估分谁请饮料。熟悉的挑战让心跳重新有了方向，却没有变成新的排名赌约。明天你们仍会在不同考场独自作答；今晚这句战书只是提醒彼此，难题出现时别把一次卡顿误认成整场失败。" },
+      "eve-competitive-truth": { san: 1, mindset: 7, social: 1, result: "你承认自己害怕在最熟悉的科目上失常，也害怕看见TA发挥得比自己好。对面没有趁机说漂亮话，只回答TA也会嫉妒、也会慌。竞争没有因此消失，却第一次不再要求任何人假装刀枪不入；你们约好考后无论结果如何，先各自吃完一顿饭再谈分数。" },
+      "eve-playful-meme": { san: 5, mindset: 4, result: "你给TA的准考证加上一圈更夸张的像素特效，又宣布聊天窗口将在十分钟后强制停服。最后一个表情包停在刚好还能让人笑的位置，没有滑向熬夜的长谈。手机关机后，紧张依然存在，却不再占满房间；有些陪伴的价值正是知道什么时候结束。" },
+      "eve-playful-dot": { san: 2, mindset: 6, social: 2, result: "你发出句号，TA没有继续抛梗，只问你最担心哪一科。你们谈了十几分钟，也说到比赛结束后逐渐疏远的朋友。玩笑没有被否定，只是暂时让位给那些一直找不到合适气氛出现的真话。挂断前TA说，明晚可以再恢复胡说八道，今晚先允许彼此认真。" },
+      "eve-curious-answer": { san: -1, mindset: 7, social: 2, result: "你说分数会改变城市、学校和一部分见面频率，却不会决定你是否真正喜欢生物，也不能替任何一段关系判定真假。TA补充了自己的答案，两个人不断修改边界，直到意识到已经很晚。问题仍不完整，但你不再要求明天的卷子承担它无力回答的部分。" },
+      "eve-curious-pause": { san: 5, mindset: 5, result: "你告诉TA这个问题值得保留，却不值得用睡眠交换。TA没有失望，只把它记进考后清单，随后与你互道晚安。对话停在未完成的位置并不意味着逃避；有时信任恰恰是相信一个问题不用立刻回答，也不会因此永远失去机会。" },
+    };
+    const chosen = effects[choiceId] ?? effects["eve-alone-check"];
+    return update(state, { stage: "gaokao", ...chosen });
   }
   if (state.stage === "gaokao") {
     const gaokao = simulateGaokao(state, seed);
@@ -1721,13 +2005,28 @@ export function advancePostCareer(
     return {
       ...state,
       gaokao,
-      stage: nextStage,
+      stage: "score-release",
+      resumeStage: nextStage,
       lastResult: `高考总分 ${gaokao.total.toFixed(1)} / 750，全省约第${gaokao.provinceRank}名。`,
       history: [
         ...state.history,
         `高考${gaokao.total.toFixed(1)}分，全省约第${gaokao.provinceRank}名。`,
       ],
     };
+  }
+  if (state.stage === "score-release") {
+    const scoreEffects: Record<string, { san: number; mindset: number; familySupport: number; result: string }> = {
+      "score-anxious-check": { san: -1, mindset: 2, familySupport: 3, result: "你们只核对姓名、科目、位次和复核规则，把可能学校留到第二天再查。母亲几次想重新计算假设分，最终按约定关掉页面。焦虑没有因为成绩落地自动消失，却第一次被限制在必要信息之内；今晚没有人继续用另一个版本的你反复覆盖已经发生的结果。" },
+      "score-anxious-walk": { san: 5, mindset: 3, familySupport: -1, result: "你没有回应接连出现的问题，拿上钥匙下楼走了一圈。回来时父母已经把几张截图发进家庭群，气氛仍然紧绷。你承认离开让他们更不安，也说明自己需要先恢复呼吸再讨论未来。这个边界并不温柔，却阻止一场刚出分就开始的全面复盘吞掉整晚。" },
+      "score-results-plan": { san: -2, mindset: 4, familySupport: 2, result: "你们按位次筛出几档学校，只记录城市、专业和风险，不讨论这两年是否划算。父亲几次把话题拉回投入产出，又自己停住。结果导向并没有消失，只是被推迟到你们都能承受的时候；眼下这张成绩单先是一份招生信息，而不是对过去全部选择的终审判决。" },
+      "score-results-refuse": { san: 3, mindset: 5, familySupport: -2, result: "你明确拒绝在今天计算竞赛带来的净收益。父亲认为这是回避，母亲则试图缓和，两句话很快顶成争执。你没有得到一个平静的查分夜，却保住了不让单次结果定义全部经历的权利。讨论最终暂停，代价是这笔旧账以后仍会回来，而且不会因为你说过一次拒绝就自动消失。" },
+      "score-longterm-plan": { san: 2, mindset: 4, familySupport: 3, result: "你从三套方案里圈出两条可以继续调查的方向，然后要求今晚到此为止。父母接受了，因为停止时间本来就在计划里。准备充分让你们避开慌乱，也让成绩迅速变成下一阶段任务；至少关灯以后，那些表格被留在客厅，没有跟进卧室继续排列未来。" },
+      "score-longterm-feel": { san: 4, mindset: 5, familySupport: 2, result: "你请父母把文件夹合上，先听自己说查到分数时究竟是轻松、失落还是茫然。语言几次互相矛盾，他们也没有急着替你归纳。长期计划第一次容纳了一段无法立刻转成行动项的情绪；明天仍要谈志愿，但今晚不再只是通往下一张表格的过道。" },
+      "score-open-together": { san: 1, mindset: 4, familySupport: 4, result: "你把电脑转向餐桌中央，三个人一起查位次、专业和招生变化。父母会提出意见，却每次都先问你怎么看。宽松因此不再只是退到一旁，而成为一种共同工作的方式：他们提供经验和时间，你保留最后决定，也必须认真回应现实门槛。" },
+      "score-open-alone": { san: 5, mindset: 4, familySupport: 1, result: "你独自在房间坐了很久，没有立刻比较同学分数，也没有强迫自己产生某种合适情绪。走出房门时，父母仍在客厅等着，却没有追问刚才做了什么。你主动约定第二天下午一起谈志愿；私人空间不是无限延期，而是让你能用自己的状态重新回到共同决定。" },
+    };
+    const chosen = scoreEffects[choiceId] ?? scoreEffects["score-open-together"];
+    return update({ ...state, resumeStage: undefined }, { stage: state.resumeStage ?? "admission", ...chosen });
   }
   if (state.stage === "strong-written") {
     let writtenState = state;
@@ -1742,7 +2041,8 @@ export function advancePostCareer(
     return {
       ...writtenState,
       strongResult: result,
-      stage: result.enteredInterview ? "strong-interview" : "admission",
+      stage: result.enteredInterview ? "strong-interview" : "strong-setback",
+      resumeStage: result.enteredInterview ? undefined : "admission",
       lastResult: result.enteredInterview
         ? `强基笔试 ${result.written.toFixed(1)}分，排名第${result.writtenRank}/${result.writtenParticipants}，越过约${result.writtenCutoff.toFixed(1)}分的复试线。`
         : `强基笔试 ${result.written.toFixed(1)}分，排名第${result.writtenRank}/${result.writtenParticipants}，未达到约${result.writtenCutoff.toFixed(1)}分的复试线。你不能参加面试。`,
@@ -1757,6 +2057,15 @@ export function advancePostCareer(
             : "普通强基止步笔试。",
       ],
     };
+  }
+  if (state.stage === "strong-setback") {
+    const outcomes: Record<string, { san: number; mindset: number; social?: number; result: string }> = {
+      "strong-setback-review": { san: -2, mindset: 4, result: "你没有在公告栏前估算‘如果那道题多拿几分’，只抄下自己的排名、复试线和今年人数。数字证明差距真实存在，也阻止传言把它夸成完全不可能或只差一点运气。纸折进文件袋后，这场考试终于从反复重演的假设变成一份已经结束的记录。" },
+      "strong-setback-peer": { san: 3, mindset: 3, social: 4, result: "车站里几个人交换了各自不会的题，也谈到有人本来就准备走普通志愿，有人已经第二次在类似选拔落空。没有谁负责把气氛变得励志，失望只是被放进更宽的人群里。分别前你们互留联系方式，却没有承诺以后一定会成为朋友。" },
+      "strong-setback-leave": { san: 5, mindset: 2, result: "你绕开公告栏和复盘人群，把准考证放进包最深处。回程中几次有人发来询问，你只回复结果，没有解释原因。直接离开让一些细节永远没有答案，却也保住了之后整理普通志愿所需的精力；不是每一次失败都必须当场榨出意义。" },
+    };
+    const chosen = outcomes[choiceId] ?? outcomes["strong-setback-leave"];
+    return update({ ...state, resumeStage: undefined }, { stage: state.resumeStage ?? "admission", ...chosen });
   }
   if (state.stage === "strong-interview") {
     const prepared =
@@ -1817,7 +2126,7 @@ export function advancePostCareer(
           title: "暂停键不是删除键",
           subtitle: "休学结局 · 保留学籍",
           body:
-            "你没有参加这一届高考。医院的诊断、学校的休学手续和被清空的日程表一度让生活显得异常安静。",
+            "你没有参加这一届高考。医院的诊断、学校的休学手续和被清空的日程表一度让生活显得异常安静，原本每天催促你的倒计时突然失去作用。最初几周并没有轻松，睡眠、进食和简单出门都需要重新练习；同学继续向考场前进，你则第一次把恢复本身当作不需要用成绩证明的正式安排。",
         }),
         lastResult: "你接受了休学和治疗安排。这一届高考不再继续。",
       };
@@ -1842,13 +2151,13 @@ export function advancePostCareer(
             title: "离开那张排名表",
             subtitle: "退学结局 · 非传统教育路径",
             body:
-              "你办理了退学。没有高考倒计时，也没有录取通知书，只有一段突然空出来、必须重新安排的生活。",
+              "你办理了退学。没有高考倒计时，也没有录取通知书，只有一段突然空出来、必须重新安排的生活。离开学校并未自动消除疲惫或家庭冲突，反而让每一天都失去现成结构；你需要从治疗、基础课程和新的教育路径重新搭起时间。原来的评价体系不再拥有全部权力，新的自由也不会替你完成任何决定。",
           })
         : abnormalEnding(input, state, "pause", {
             title: "这一届先到这里",
             subtitle: "休学结局 · 等待复学",
-            body:
-              "学校保留了你的学籍。高考被推迟一年，竞赛和排名也第一次从每天的生活中退了出去。",
+          body:
+            "学校保留了你的学籍，高考被推迟一年，竞赛和排名也第一次从每天的生活中退了出去。办理手续后，你并没有立刻知道复学时会回到哪间教室，也不知道旧关系还能保留多少；但治疗、作息和重新接触课程终于获得不必与这一届进度赛跑的空间。暂停改变了时间表，却没有把此前的人生从档案里删除。",
           }),
       lastResult: dropout ? "你办理了退学手续。" : "你正式办理休学，保留学籍。",
     };
@@ -1858,6 +2167,134 @@ export function advancePostCareer(
 
 export function postKnowledgeTotal(state: PostCareerState) {
   return totalKnowledge(state);
+}
+
+/**
+ * 将高考后流程中存在人物差异的场景完整暴露给开发者文本编辑器。
+ * 这里逐个生成家长与 NPC 性格版本，不使用运行时姓名作为归档标题，
+ * 但正文仍保留动态姓名占位能力。
+ */
+export function postCareerDeveloperCatalog(): GameEvent[] {
+  const baseInput: PostCareerInput = {
+    seed: "developer-post-career",
+    name: "{主角}",
+    originId: "ordinary",
+    originAcademic: 62,
+    retiredWeek: 104,
+    retired: false,
+    academics: 72,
+    reasoning: 70,
+    biologyMastery: 76,
+    experiment: 68,
+    san: 58,
+    mindset: 61,
+    social: 55,
+    familySupport: 60,
+    coachFavor: 35,
+    peerFavor: 45,
+    nationalRank: 120,
+    nationalMedal: "银牌",
+    playerGender: "female",
+    modules: [76, 72, 70, 68],
+  };
+  const events: GameEvent[] = [];
+  const addScene = (
+    stage: string,
+    variantKey: string,
+    variantLabel: string,
+    group: string,
+    order: number,
+    input: PostCareerInput,
+    statePatch: Partial<PostCareerState> = {},
+  ) => {
+    const state = { ...createPostCareer(input), ...statePatch, stage };
+    const scene = getPostScene(state, input);
+    events.push({
+      id: `post-career-editor-${stage}-${variantKey}`,
+      phase: "ending",
+      label: scene.kicker,
+      title: scene.title,
+      body: [scene.lead, scene.detail],
+      concealConsequences: true,
+      trigger: { earliestWeek: 105, latestWeek: 160 },
+      archive: {
+        category: "高考与后续人生",
+        group,
+        clusterKey: `post-career-${stage}`,
+        variantKey,
+        variantLabel,
+        timingNote: "竞赛主线结束后，按实际前置结果进入",
+        order,
+      },
+      choices: scene.choices.map((choice) => ({
+        id: `${stage}-${variantKey}-${choice.id}`,
+        title: choice.title,
+        preview: "",
+        result: advancePostCareer(state, choice.id, input).lastResult ?? scene.detail,
+        effects: {},
+      })),
+    });
+  };
+
+  const parentVariants: Array<[NonNullable<PostCareerInput["familyProfileKey"]>, string]> = [
+    ["anxious", "焦虑保护型家长"],
+    ["results", "结果导向型家长"],
+    ["longterm", "长期规划型家长"],
+    ["open", "开放支持型家长"],
+  ];
+  parentVariants.forEach(([familyProfileKey, label], index) => {
+    const input = { ...baseInput, familyProfileKey };
+    addScene("family-midterm", familyProfileKey, label, "高三期中后的家庭谈话", 10 + index, input, { resumeStage: "mock1" });
+    addScene(
+      "score-release",
+      familyProfileKey,
+      label,
+      "高考查分后的家庭反应",
+      40 + index,
+      input,
+      {
+        resumeStage: "admission",
+        gaokao: { subjects: { 语文: 116, 数学: 128, 英语: 132, 物理: 86, 化学: 88, 生物: 91 }, total: 641, provinceRank: 2460, participants: 320000 },
+      },
+    );
+  });
+
+  const npcVariants: Array<[NonNullable<NonNullable<PostCareerInput["relationships"]>[number]["personalityKey"]>, string]> = [
+    ["reserved", "克制寡言型 NPC"],
+    ["warm", "温和照料型 NPC"],
+    ["competitive", "竞争好胜型 NPC"],
+    ["playful", "轻快玩笑型 NPC"],
+    ["curious", "好奇探索型 NPC"],
+  ];
+  npcVariants.forEach(([personalityKey, label], index) => {
+    const input: PostCareerInput = {
+      ...baseInput,
+      relationships: [{
+        name: "{关系对象}",
+        route: "dating",
+        bond: 78,
+        trust: 72,
+        conflict: 18,
+        familiarity: 76,
+        security: 69,
+        estrangement: 8,
+        personalityKey,
+      }],
+    };
+    addScene("gaokao-eve", personalityKey, label, "高考前夜的人际支线", 25 + index, input, { resumeStage: "gaokao" });
+  });
+
+  addScene("gaokao-eve", "alone", "没有亲近关系", "高考前夜的人际支线", 30, baseInput, { resumeStage: "gaokao" });
+  addScene(
+    "strong-setback",
+    "written-failure",
+    "强基笔试落选",
+    "失败路线",
+    60,
+    baseInput,
+    { resumeStage: "admission", strongResult: { written: 68, writtenCutoff: 72, enteredInterview: false } },
+  );
+  return events;
 }
 
 export const postSubjectMaxima = subjectMax;
