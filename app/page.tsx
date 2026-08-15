@@ -15,7 +15,27 @@ import {
   type Textbook,
   type WeeklyAction,
 } from "./game-data";
-import { linkedWeeklyEvents } from "./event-library";
+import { linkedStoryDeveloperEvents, linkedWeeklyEvents } from "./event-library";
+import { familyWeeklyScenes as familyWeeklySceneCatalog } from "./family-weekly-content";
+import { familyCheckpointContent } from "./family-checkpoint-content";
+import { developerChangelog } from "./developer-changelog";
+import { DeveloperStoryEditor, applyStoryTextOverride, captureStoryEvent, loadStoryTextOverrides } from "./developer-story-editor";
+import {
+  defaultSupplementaryBookStudy,
+  effectiveSupplementaryMastery,
+  supplementaryBooks,
+  supplementaryExamBonus,
+  supplementaryExperimentBonus,
+  type SupplementaryBookState,
+} from "./supplementary-books";
+import {
+  drawRealQuestions,
+  reviewedQuestionBank,
+  scoreRealQuestion,
+  type MistakeRecord,
+  type RealQuestion,
+  type TruthValue,
+} from "./real-questions";
 import {
   communityAchievementConditions,
   communityAchievementDefinitions,
@@ -29,14 +49,17 @@ import {
   relationshipLearningBoost,
   relationshipWeeklyMoodEffect,
   relationshipRouteLabel,
+  relationshipStoryDeveloperCatalog,
+  breakupRelationship,
+  attemptRelationshipReunion,
   settleRelationshipWeek,
   type DeepRelationship,
   type PlayerGender,
 } from "./relationship-content";
-import { nextRelationshipDailyEvent } from "./relationship-dailies";
-import { nextPersonalityDailyEvent } from "./relationship-personality-dailies";
-import { nextFantasyStoryEvent } from "./fantasy-content";
-import { nextAchievementStoryEvent } from "./achievement-events";
+import { nextRelationshipDailyEvent, relationshipDailyDeveloperCatalog } from "./relationship-dailies";
+import { nextPersonalityDailyEvent, relationshipPersonalityDeveloperCatalog } from "./relationship-personality-dailies";
+import { fantasyStoryDeveloperCatalog, nextFantasyStoryEvent } from "./fantasy-content";
+import { achievementStoryDeveloperCatalog, nextAchievementStoryEvent } from "./achievement-events";
 import { keepsakeAtlasDataUrl } from "./keepsake-atlas-data";
 import {
   displayKeepsake,
@@ -450,7 +473,9 @@ function simulateProvincialExam(
   };
 
   const playerFormKey = `${seed}-province-player-${week}`;
-  const playerModules = moduleKeys.map((key) => stats[key]);
+  const playerModules = moduleKeys.map((key) =>
+    clamp(stats[key] + supplementaryExamBonus(stats.supplementaryBookStudy, key)),
+  );
   const correctTotal = examScore(
     playerModules,
     stats.reasoning,
@@ -751,7 +776,11 @@ function simulateNationalExam(
     hashSeed(`${seed}-national-size-${week}`),
   );
   const moduleAverage =
-    (stats.module1 + stats.module2 + stats.module3 + stats.module4) / 4;
+    (["module1", "module2", "module3", "module4"] as const).reduce(
+      (sum, module) =>
+        sum + stats[module] + supplementaryExamBonus(stats.supplementaryBookStudy, module),
+      0,
+    ) / 4;
   const condition =
     (0.87 + stats.san * 0.0015) *
     (0.95 + stats.mindset * 0.0007) *
@@ -1043,11 +1072,13 @@ function simulateNationalExam(
     theoryRaw,
     theoryT,
     theoryRank,
+    competitorTheory,
     qualifiedForExperiment,
     experimentScores,
     experimentT,
     finalScore,
     finalRank,
+    competitorFinal,
     medal,
     experimentRank,
     sanAtExam: stats.san,
@@ -1310,6 +1341,7 @@ type PlayerStats = {
   competitionNeglectWeeks: number;
   slackDependence: number;
   bookStudy: Record<string, BookStudyState>;
+  supplementaryBookStudy: Record<string, SupplementaryBookState>;
 };
 
 type BookStudyState = {
@@ -1338,6 +1370,7 @@ type WeekMoment = {
   title: string;
   choice?: string;
   result?: string;
+  effects?: GameEffect;
 };
 
 type AssessmentRecap = {
@@ -1439,11 +1472,13 @@ type NationalAttempt = {
   theoryRaw: number;
   theoryT: number;
   theoryRank: number;
+  competitorTheory?: number[];
   qualifiedForExperiment: boolean;
   experimentScores: Array<{ name: string; score: number }>;
   experimentT: number;
   finalScore: number;
   finalRank: number | null;
+  competitorFinal?: number[];
   medal: NationalMedal;
   experimentRank?: number;
   sanAtExam?: number;
@@ -1600,6 +1635,7 @@ type EventResultNotice = {
   title: string;
   choice: string;
   result: string;
+  effects?: GameEffect;
   nextAction?:
     | { type: "national-finish" }
     | { type: "continue-event"; event: GameEvent }
@@ -2701,6 +2737,52 @@ function makeExperimentAction(
   };
 }
 
+function makeSupplementaryBookAction(bookId: string, mode: "browse" | "research"): WeeklyAction {
+  const book = supplementaryBooks.find((item) => item.id === bookId)!;
+  return {
+    id: `supplementary-${bookId}-${mode}`,
+    category: "study",
+    title: `${mode === "browse" ? "简单浏览" : "深入研究"} · ${book.title}`,
+    description: mode === "browse" ? "快速建立专门领域的地图，收获有限但压力较小。" : "沿着专门问题持续深挖，掌握增长更高，也更消耗精神状态。",
+    cost: mode === "browse" ? 1 : 2,
+    effects: { san: mode === "browse" ? -1.5 : -4, reasoning: mode === "research" ? 0.35 : 0.1 },
+    supplementaryBookEffect: { bookId, mastery: mode === "browse" ? 5 : 11, retention: mode === "browse" ? 6 : 13, mode },
+  };
+}
+
+function makeSupplementaryUnlockEvent(week: number, seed: string, stats: PlayerStats): GameEvent | null {
+  if (week < 8 || seededUnit(`${seed}-supplementary-unlock-${week}`) >= 0.075) return null;
+  const locked = supplementaryBooks.filter((book) => !stats.supplementaryBookStudy[book.id]?.unlocked);
+  if (!locked.length) return null;
+  const book = locked[hashSeed(`${seed}-${week}-supplementary-choice`) % locked.length];
+  return supplementaryUnlockEventForBook(book, week);
+}
+
+function supplementaryUnlockEventForBook(
+  book: (typeof supplementaryBooks)[number],
+  week = 8,
+): GameEvent {
+  return {
+    id: `supplementary-unlock-${book.id}`,
+    phase: "weekly",
+    label: "偶然所得 · 扩充书目",
+    title: `一本不在教练书单里的${book.title}`,
+    body: ["它可能来自旧书架、群友寄来的纸箱、学长留下的资料，或一次漫无目的的检索。封面与教练常用书单格格不入，目录却正好延伸到你最近反复疑惑的地方。它不会替代基础教材，也不计入模块总掌握，却可能让你在少数理论题、实验判断或材料语境中看见更深一层。把它带走意味着多开一条支路，暂时记下则能保护现有进度；两种选择都不等于否认知识本身的价值。"],
+    trigger: { earliestWeek: week, latestWeek: week },
+    concealConsequences: true,
+    choices: [
+      { id: `unlock-supplementary-${book.id}`, title: "把它加入自己的扩充书目", preview: "", result: `你掸掉封面上的灰，把${book.title}放进书架最容易拿到的位置，又在目录旁夹了一张空白索引。它不会替代当前教材，也不会被计入模块总掌握；从下周起，你可以选择简单浏览或深入研究，让其中更专门的知识影响相关题目，部分书目也会帮助对应实验判断。眼下多出来的不是必须完成的任务，而是一条可以自行决定走多深的支路。`, effects: { tags: [`扩充书目:${book.id}:已解锁`] } },
+      { id: `skip-supplementary-${book.id}`, title: "暂时把线索记下来", preview: "", result: `你把${book.title}的书名、版本和发现地点记在资料索引末尾，却没有立刻把它加入本周计划。现有教材已经占满桌面，再开一条战线只会让每本书都停在前几十页。那条记录并未消失；以后再次遇到这本书或更明确的题目需求时，你仍有机会把它带回书架。此刻的克制不是否定它的价值，而是承认注意力也有边界。`, effects: { mindset: 0.2 } },
+    ],
+  };
+}
+
+function supplementaryUnlockDeveloperCatalog() {
+  return supplementaryBooks.map((book, index) =>
+    supplementaryUnlockEventForBook(book, 8 + index),
+  );
+}
+
 const learningKeys: Array<keyof GameEffect> = [
   "module1",
   "module2",
@@ -2917,12 +2999,24 @@ function findWeeklyEvent(
   const eligible = pool.filter((event) => {
       const trigger = event.trigger;
       if (resolved.includes(event.id)) return false;
+      if (event.phase === "exam") return false;
       const mentionedRival = rivalMentionedBy(event);
       if (mentionedRival && retiredRivalIds.includes(mentionedRival.id))
         return false;
-      if (event.phase === "training" && !isTrainingWeek) return false;
+      if (isTrainingWeek && event.phase !== "training") return false;
+      if (!isTrainingWeek && event.phase === "training") return false;
       if (week < trigger.earliestWeek || week > trigger.latestWeek) return false;
       if (trigger.allowedWeeks && !trigger.allowedWeeks.includes(week)) return false;
+      const chainMatch = event.id.match(/^chain-(.+)-(\d{2})$/);
+      if (chainMatch && Number(chainMatch[2]) > 1) {
+        const previousStep = Number(chainMatch[2]) - 1;
+        const previousWeekTag = tags.find((tag) => tag.startsWith(`chain:${chainMatch[1]}:${previousStep}:week:`));
+        if (previousWeekTag) {
+          const previousWeek = Number(previousWeekTag.split(":").at(-1));
+          const requiredGap = 2 + (hashSeed(`${seed}-${event.id}-chain-gap`) % 4);
+          if (Number.isFinite(previousWeek) && week - previousWeek < requiredGap) return false;
+        }
+      }
       if (stats.social < (trigger.minSocial ?? 0)) return false;
       if (stats.peerFavor < (trigger.minPeerFavor ?? 0)) return false;
       if (stats.peerFavor > (trigger.maxPeerFavor ?? 100)) return false;
@@ -2937,6 +3031,30 @@ function findWeeklyEvent(
       )
         return false;
       if (trigger.blockedTags?.some((blockedTag) => tags.includes(blockedTag)))
+        return false;
+      const taggedWeek = (requiredTag: string) => {
+        const prefix = `tag-week:${requiredTag}:`;
+        const weeks = tags
+          .filter((tag) => tag.startsWith(prefix))
+          .map((tag) => Number(tag.slice(prefix.length)))
+          .filter(Number.isFinite);
+        return weeks.length > 0 ? Math.max(...weeks) : undefined;
+      };
+      if (
+        trigger.minimumWeeksAfterTags &&
+        Object.entries(trigger.minimumWeeksAfterTags).some(([requiredTag, gap]) => {
+          const happenedAt = taggedWeek(requiredTag);
+          return happenedAt !== undefined && week - happenedAt < gap;
+        })
+      )
+        return false;
+      if (
+        trigger.maximumWeeksAfterTags &&
+        Object.entries(trigger.maximumWeeksAfterTags).some(([requiredTag, gap]) => {
+          const happenedAt = taggedWeek(requiredTag);
+          return happenedAt !== undefined && week - happenedAt > gap;
+        })
+      )
         return false;
       if (
         trigger.requiredActionCounts &&
@@ -2954,7 +3072,10 @@ function findWeeklyEvent(
         return false;
       return true;
     });
-  if (eligible.length === 0) return makeRoutineEvent(week, seed);
+  if (eligible.length === 0)
+    return isTrainingWeek
+      ? makeTrainingRoutineEvent(week, seed)
+      : makeRoutineEvent(week, seed);
   const trainingEligible = eligible.filter((event) => event.phase === "training");
   const isolationEligible =
     stats.peerFavor <= 8
@@ -2970,9 +3091,65 @@ function findWeeklyEvent(
     (event) =>
       seededUnit(`${seed}-${event.id}-${week}`) < (event.trigger.probability ?? 1),
   );
-  const candidates = probabilistic.length > 0 ? probabilistic : priorityPool;
+  if (probabilistic.length === 0)
+    return isTrainingWeek
+      ? makeTrainingRoutineEvent(week, seed)
+      : makeRoutineEvent(week, seed);
+  const candidates = probabilistic;
   const index = hashSeed(`${seed}-weekly-event-${week}`) % candidates.length;
   return candidates[index];
+}
+
+function makeTrainingRoutineEvent(week: number, seed: string): GameEvent {
+  const variants: GameEvent[] = [
+    {
+      id: `training-routine-handout-${week}`,
+      phase: "training",
+      label: "外培日常 · 课间",
+      title: "讲义在课间多出了一页",
+      body: [
+        "上午的讲师拖堂了十分钟，下一节课的人已经抱着电脑站在门口。你收拾桌面时，发现讲义最后多夹了一页没有页码的补充材料：像是上一届留下的整理，也可能只是助教临时打印的延伸题。周围的人有的抓紧拍照，有的趴在桌上补觉。培训日程不会为这页纸停下，你只能决定现在把注意力放在哪里。",
+      ],
+      trigger: { earliestWeek: week, latestWeek: week },
+      concealConsequences: true,
+      choices: [
+        { id: `training-routine-handout-copy-${week}`, title: "拍下来，午休再判断是否值得看", preview: "", result: "你没有立刻挤进新知识里，只把页面拍清楚，并在文件名里记下讲师和章节。午休时你发现其中一半只是旧题重排，另一半却正好补上上午跳过的推导。筛选花去一点休息，却避免了把所有额外资料都当作必须完成；真正有用的两段被抄进了当天笔记，其余内容留在相册里等待以后再说。", effects: { reasoning: 0.3, san: -0.3 } },
+        { id: `training-routine-handout-rest-${week}`, title: "把纸交给同桌，先去走廊透气", preview: "", result: "你请同桌替你保留一张，自己走到窗边喝水。十分钟里没有增加任何页数，耳边密集了一上午的术语却终于慢慢退开。下一节课开始前，同桌告诉你那页并非必讲内容，还把拍好的照片发来。你没有失去资料，只是不再要求自己在每一次偶然发现面前立即进入战斗状态。", effects: { san: 1.3, peerFavor: 0.3 } },
+      ],
+    },
+    {
+      id: `training-routine-dorm-${week}`,
+      phase: "training",
+      label: "集训日常 · 宿舍",
+      title: "熄灯前的二十分钟",
+      body: [
+        "晚课结束后，宿舍里四个人都说只再看一会儿，台灯却一盏接一盏亮起来。有人复盘白天模考，有人排队洗澡，还有人把明早的闹钟设了三遍。你今天确实有几处没弄懂，也确实已经困得需要反复读同一句话。集训把学习、休息和同伴生活压进一个房间，继续或停下都会影响明天的状态。",
+      ],
+      trigger: { earliestWeek: week, latestWeek: week },
+      concealConsequences: true,
+      choices: [
+        { id: `training-routine-dorm-one-${week}`, title: "只订正最关键的一题，然后按时熄灯", preview: "", result: "你把目标缩到那道真正影响后续理解的题，和上铺核对完关键前提便合上讲义。剩余错题仍在红笔圈里，没有因为停下而消失；可闹钟响起时，你至少能清楚记得昨晚弄懂了什么。克制没有换来夸张进步，只保护了第二天第一节课仍能工作的注意力。", effects: { reasoning: 0.25, san: 0.8 } },
+        { id: `training-routine-dorm-all-${week}`, title: "趁记忆还热，把整套卷重新过完", preview: "", result: "你压低台灯，把每道错题都重新算了一遍。凌晨时思路一度变得很顺，几处漏洞也确实被补上；代价在第二天早课才出现，讲师讲到新的关键步骤时，你必须掐着手心才能保持清醒。昨夜的收获真实存在，透支同样真实存在，它们不会互相抵消。", effects: { reasoning: 0.7, san: -2.2 } },
+        { id: `training-routine-dorm-talk-${week}`, title: "收起卷子，听室友讲今天最崩溃的时刻", preview: "", result: "话题从一道离谱的实验题开始，很快变成谁在课堂上走神、谁偷偷想家、谁其实没听懂却不敢举手。没有人替别人解决问题，房间里的比较却松了一点。熄灯后你仍记得白天的失误，也知道它们并非只发生在自己身上；这段闲聊占去复盘时间，换回了几个人都更容易入睡的夜晚。", effects: { peerFavor: 0.8, san: 1.2 } },
+      ],
+    },
+    {
+      id: `training-routine-lunch-${week}`,
+      phase: "training",
+      label: "外培日常 · 午休",
+      title: "陌生食堂里的一张空桌",
+      body: [
+        "培训点的食堂比学校更拥挤，课程表只给了四十分钟午休。你端着餐盘找到一张空桌，旁边几名外校选手正在讨论上午讲师留下的争议结论；另一侧靠窗的位置很安静，足够吃完饭后趴一会儿。外培机会珍贵，结识新同伴和保护下午状态也都不是浪费时间，区别只在你愿意承担哪一种缺失。",
+      ],
+      trigger: { earliestWeek: week, latestWeek: week },
+      concealConsequences: true,
+      choices: [
+        { id: `training-routine-lunch-join-${week}`, title: "坐过去，先听他们怎样理解那段结论", preview: "", result: "你没有一坐下就宣布自己的答案，而是先听清几个人争论的其实是不同层级的问题。等你补上一条例外条件时，讨论终于从互相否定变成可以查证的分歧。午饭吃得有些匆忙，你却记住了两个外校名字，也得到一份晚上会发来的参考页码；社交占用休息，换来的不是捷径，而是以后还能继续对话的入口。", effects: { social: 0.8, reasoning: 0.25, san: -0.5 } },
+        { id: `training-routine-lunch-rest-${week}`, title: "坐到窗边，把这顿饭安静吃完", preview: "", result: "你没有因为身处外培就强迫自己抓住每一次交流，只把手机调成静音，慢慢吃完午饭。窗外没有熟悉的操场，楼下送货车倒车的声音反而让脑子短暂空了下来。下午回教室时，你错过了一段可能有用的讨论，却没有错过讲师开场的前二十分钟；这也是培训日程里一种真实的收益。", effects: { san: 1.5 } },
+      ],
+    },
+  ];
+  return variants[hashSeed(`${seed}-training-routine-${week}`) % variants.length];
 }
 
 function makeRoutineEvent(week: number, seed: string): GameEvent {
@@ -2982,7 +3159,7 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
       phase: "weekly",
       label: "每周日常 · 校园",
       title: "图书馆最后一排",
-      body: ["今天没有大事发生。晚自习结束前，你还可以决定怎样处理剩下的一点时间。"],
+      body: ["晚自习临近结束，图书馆最后一排只剩你和两名竞赛生。管理员已经关掉半边灯，窗外的操场广播也停了。今天没有突发事件，恰恰因此，最后四十分钟显得完全属于你：可以再逼自己推进一点，也可以和身边的人交换那些不会写进周计划的近况。"],
       inspiration: "原创",
       trigger: { earliestWeek: week, latestWeek: week },
       choices: [
@@ -2990,14 +3167,14 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
           id: `routine-library-study-${week}`,
           title: "再看一节书",
           preview: "微小但稳定的积累",
-          result: "你在闭馆提示响起前又读完了几页。",
+          result: "你把计时器调到三十五分钟，只处理刚才卡住的那一小节。闭馆提示响起时，进度条并没有出现惊人的跳跃，但页边多了两个真正由自己推出来的箭头。你合上书时仍有些疲惫，却没有平日那种“坐了很久却不知道学了什么”的空心感；这几页会在之后的复习里成为可靠的落脚点。",
           effects: { module1: 0.4, san: -0.5 },
         },
         {
           id: `routine-library-chat-${week}`,
           title: "和队友聊几句",
           preview: "交换一点近况和情报",
-          result: "没有惊人的发现，但你知道大家都在经历相似的卡顿。",
+          result: "你压低声音问起最近的训练，话题很快从一道难题滑到睡眠、家长和谁又在群里假装毫不焦虑。没有人提供秘密资料，也没有一句话能直接提高分数，但你终于知道别人同样会在熟悉章节里卡住、会害怕被队友超过。离开图书馆时，问题仍然存在，只是不再像只发生在你一个人身上。",
           effects: { peerFavor: 0.8, san: 0.5 },
         },
       ],
@@ -3007,7 +3184,7 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
       phase: "weekly",
       label: "每周日常 · 队内社交",
       title: "食堂的十分钟",
-      body: ["队伍里有人争论一道题，也有人只想赶紧吃完回教室。你坐在旁边，决定要不要加入。"],
+      body: ["午休只剩十分钟，食堂窗口已经开始收餐。队伍里两个人端着餐盘争论一道生态题，筷子在半空比画捕食关系；另一边的人埋头吃饭，只想在下午训练前获得片刻安静。你坐在两拨人中间，胃和大脑提出了完全不同的优先级。"],
       inspiration: "原创",
       trigger: { earliestWeek: week, latestWeek: week },
       choices: [
@@ -3015,14 +3192,14 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
           id: `routine-canteen-talk-${week}`,
           title: "加入讨论",
           preview: "也许能理清一个概念",
-          result: "你们没有完全说服彼此，却把问题拆得更清楚了。",
+          result: "你把餐盘挪过去，先要求他们把“种群下降”究竟指数量、密度还是增长率说清楚。争论没有在十分钟内得到标准答案，却从互相重复结论变成了三个可以查证的问题。回教室后，有人真的找出教材页码发进群里。你少休息了一会儿，但获得的不是一句答案，而是一套以后还能使用的拆题方式。",
           effects: { reasoning: 0.5, peerFavor: 0.5, san: -0.3 },
         },
         {
           id: `routine-canteen-rest-${week}`,
           title: "安静吃饭",
           preview: "给脑子留一点空白",
-          result: "这十分钟没有知识增量，但你终于停止了内心答题。",
+          result: "你没有加入争论，把手机扣在桌面，认真吃完已经有些凉的饭。周围的术语仍不断飘过来，你却第一次允许自己不在每句话后面寻找考点。十分钟里没有任何知识增量，下午回到教室时，太阳穴的紧绷却缓了下来；你发现休息并不是从竞赛时间里偷走东西，而是在保护下一段真正能工作的注意力。",
           effects: { san: 1.2 },
         },
       ],
@@ -3032,7 +3209,7 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
       phase: "weekly",
       label: "每周日常 · 教练",
       title: "办公室门口",
-      body: ["你路过竞赛教练办公室，门开着。里面的灯还亮着，但你不确定自己的问题值不值得问。"],
+      body: ["晚训结束后，你路过竞赛教练办公室，门开着一条缝。教练正对着电脑整理下周课表，桌边还摞着没有批完的卷子。你本来只是想问一道题，却在门口站了半分钟：问题还很模糊，进去可能得到指点，也可能只是暴露自己连哪里没懂都说不清。"],
       inspiration: "原创",
       trigger: { earliestWeek: week, latestWeek: week },
       choices: [
@@ -3040,14 +3217,14 @@ function makeRoutineEvent(week: number, seed: string): GameEvent {
           id: `routine-corridor-ask-${week}`,
           title: "进去问问",
           preview: "一次普通的请教",
-          result: "教练没有给出完整答案，只指出了你推理中跳过的一步。",
+          result: "你敲门后先把自己的推理从头讲了一遍，讲到第三步时便听出哪里不对。教练没有接过草稿替你算完，只圈出那个被你默认成立的条件，又从书架抽出一本参考书让你查。谈话不到五分钟，却比直接得到答案更让人踏实；离开办公室时，你知道下一步该验证什么，也更清楚以后怎样提出一个值得讨论的问题。",
           effects: { coachFavor: 0.6, reasoning: 0.4, san: -0.3 },
         },
         {
           id: `routine-corridor-note-${week}`,
           title: "先自己想",
           preview: "把问题记下来，暂时不打扰",
-          result: "你把问题写进本子，准备等它更具体一些再来。",
+          result: "你没有敲门，而是在走廊长椅上把疑问重新写了一遍：已知条件、自己的推导、矛盾出现的位置，以及最想确认的一步。写到最后，你已经解决了其中一半，剩下的部分也不再是一团“我不会”。第二天再去办公室时，教练看完只问了两个问题；暂缓请教没有变成逃避，反而让这次交流更具体。",
           effects: { mindset: 0.3 },
         },
       ],
@@ -3072,7 +3249,7 @@ function makeHotelEvent(attemptNumber: 1 | 2): GameEvent {
         id: `hotel-parent-${attemptNumber}`,
         title: "让父母陪同，早点结束复习",
         preview: "SAN +3 · 家庭支持 +1 · 心态 +1",
-        result: "父母没有再问省队线，只把准考证和两支笔放在门边。房间十点前熄了灯。",
+        result: "父母把房间里的速查页收拢到桌角，没有再追问省队线，也没有临时搜来所谓押题资料。母亲确认了三遍闹钟，父亲把准考证、身份证和两支笔并排放在门边，随后主动结束话题。十点前灯便熄了，隔壁队员还在走廊讨论争议题时，你已经躺下。焦虑没有完全消失，却终于不必同时照顾一家人的期待。",
         effects: {
           san: 3,
           familySupport: 1,
@@ -3084,7 +3261,7 @@ function makeHotelEvent(attemptNumber: 1 | 2): GameEvent {
         id: `hotel-team-${attemptNumber}`,
         title: "跟队友拼房，参加教练考前会",
         preview: "同学好感 +2 · 教练好感 +1 · SAN -1",
-        result: "教练只讲了时间分配和弃题原则。散会后，室友还是忍不住问起一道争议题。",
+        result: "教练把考前会严格控制在二十分钟，只重复入场时间、涂卡顺序和遇到陌生题时的弃题原则，没有再塞进任何新知识。散会后，室友仍忍不住提起群里争了半天的那道题，你们约好只查一个条件便关灯。讨论最终多用了十分钟，却也让彼此确认明天有人会一起出门、一起承担紧张，而不是独自守着倒计时。",
         effects: {
           peerFavor: 2,
           coachFavor: 1,
@@ -3096,7 +3273,7 @@ function makeHotelEvent(attemptNumber: 1 | 2): GameEvent {
         id: `hotel-late-study-${attemptNumber}`,
         title: "独自住下，把速查页再过一遍",
         preview: "教材保持率小幅提高 · SAN -4 · 心态 -1",
-        result: "凌晨一点，你确实又记住了几处细节，也开始无法停止想象明天会考到什么。",
+        result: "你把速查页摊满半张床，从熟悉章节一路翻到最担心的细节。凌晨一点时，你确实重新记住了几个术语和两条易混结论，却也开始把每一页都想象成明天一定会考的内容。关灯以后，大脑仍在自动出题，走廊每次开门都让你醒来。新增的记忆是否能抵消睡眠损失还不知道，考前夜却已经被复习完整占据。",
         effects: {
           san: -4,
           mindset: -1,
@@ -3116,7 +3293,7 @@ function makePostExamRouteEvent(attemptNumber: 1 | 2): GameEvent {
     title: "答案评议稿还要三周。接下来学什么，没有人能替你决定。",
     body: [
       "现在只有机构答案和零散回忆。有人已经开始实验培训，有人继续刷理论，也有人把竞赛书全部装进纸箱。",
-      "这不是最终结果，但三周足以让不同选择产生真正的差距。",
+      "这不是最终结果，但三周足以让不同选择产生真正的差距。评议稿可能推翻你此刻的估计，却不会归还已经过去的训练时间。你必须在信息不完整时安排下一步，并接受这项决定既可能成为提前准备，也可能在名单公布后显得像一段沉没成本。",
     ],
     trigger: { earliestWeek: 1, latestWeek: 104 },
     choices: [
@@ -3124,7 +3301,7 @@ function makePostExamRouteEvent(attemptNumber: 1 | 2): GameEvent {
         id: `post-experiment-${attemptNumber}`,
         title: "先参加实验培训",
         preview: "实验解锁并提升 · SAN -2 · 若未进省队可能成为沉没成本",
-        result: "第一次完整实验课开始时，省队线仍只是群里的传闻。你决定先为可能性付出成本。",
+        result: "正式名单尚未公布，你仍按报名时间进入第一次完整实验培训。省队线在群里被改了好几个版本，身边的人也无法确认这笔投入最后是否用得上。你穿上实验服，从最基础的记录格式和仪器检查开始练习，手上的生疏很快暴露出来。提前准备可能成为优势，也可能只留下一段昂贵经历；你选择先为尚未确定的资格付出成本。",
         effects: {
           experiment: 4,
           san: -2,
@@ -3135,7 +3312,7 @@ function makePostExamRouteEvent(attemptNumber: 1 | 2): GameEvent {
         id: `post-theory-${attemptNumber}`,
         title: "继续理论，为下一次机会准备",
         preview: "思辨 +2 · 心态 +1",
-        result: "你没有等待结果替自己决定是否继续。下一本书重新被摊开在桌面上。",
+        result: "你没有把是否继续完全交给尚未公布的名单，而是按原计划摊开下一本书，把这次考试暴露出的理论缺口列成新的复习页。继续学习并不表示你确信一定有下一次机会，也不是拒绝面对可能落选；它只是让等待期仍由自己支配。群里的估分消息偶尔让你停笔，随后你又回到眼前章节，为任何可能到来的路线保留一点准备。",
         effects: {
           reasoning: 2,
           mindset: 1,
@@ -3146,7 +3323,7 @@ function makePostExamRouteEvent(attemptNumber: 1 | 2): GameEvent {
         id: `post-quit-${attemptNumber}`,
         title: "暂时退赛，开始补常规",
         preview: "常规 +5 · SAN +3 · 教练好感 -2",
-        result: "竞赛书被收进柜子。你仍会等待正式结果，但明天开始先回到班级课表。",
+        result: "你把竞赛书按模块收进柜子，只留下可能与常规课程重合的部分，第二天便回到原班跟随课表。正式结果仍会公布，你也没有宣布自己永远离开，但等待不再占满全部生活。陌生章节和堆积的作业很快暴露出回归的难度，班主任为你列出补课顺序。暂时退赛带来了喘息，也意味着必须用行动重新接上另一条被搁置许久的路线。",
         effects: {
           academics: 5,
           san: 3,
@@ -3184,8 +3361,8 @@ function makeEvaluationDraftEvent(attempt: ProvincialAttempt): GameEvent {
             : "证据较弱 · 仍可尝试 · SAN -3",
         result:
           attempt.appealDelta > 0
-            ? "你把教材页码、论文图表和逻辑链整理成一页说明。教练删掉情绪化措辞后提交给评议组。"
-            : "教练仍然替你转交了材料，但提醒你不要把最终希望寄托在申诉上。",
+            ? "你把教材页码、论文图表、题干条件和推理链压缩成一页说明，逐项区分知识错误、表述歧义与自己可能的误读。教练删去情绪化措辞，又要求你补上原文截图，才以学校名义提交评议组。证据并不保证改分，但这份不同意见终于不再只是群聊里的愤怒，而成为所有相关选手都能被统一核验的正式材料。"
+            : "你仍把能够找到的教材表述和答题回忆整理出来，教练看完后指出证据不足，却没有阻止你提交。材料最终被转交评议组，同时明确标注目前无法证明统一评分存在错误。你完成了申诉流程，也必须接受它很可能不会改变结果；之后的准备仍按原估分区间进行，不能把全部希望寄托在一次缺少关键依据的复核上。",
         effects: {
           san: -3,
           coachFavor: 1,
@@ -3197,7 +3374,7 @@ function makeEvaluationDraftEvent(attempt: ProvincialAttempt): GameEvent {
         id: `accept-draft-${attempt.attemptNumber}`,
         title: "接受评议稿，停止反复估分",
         preview: "SAN +2 · 心态 +1",
-        result: "聊天群仍在滚动，你关闭了提醒。最终线没有公布，但暂时已经没有新的信息可以获得。",
+        result: "你接受教练整理后的评议稿，把教材依据、争议点和自己的估分区间一并存档，随后关闭不断滚动的群聊提醒。有人仍在传播新的答案版本，也有人声称掌握内部名次，但这些消息都无法再被核实。最终线尚未公布，焦虑当然没有结束；只是此刻已经没有新的证据值得用一整晚追逐。你决定先让等待恢复成等待，而不是另一场无法交卷的考试。",
         effects: {
           san: 2,
           mindset: 1,
@@ -3259,8 +3436,8 @@ function makeOfficialResultEvent(
           ? "解锁省队与国赛流程 · 教练好感 +5"
           : `${award} · 后续可继续竞赛或回归常规`,
         result: entersTeam
-          ? "教练在群里只发了一句“今晚开会”。实验、国赛理论和全国对手从此成为现实。"
-          : "这次省赛已经结束。奖项不会自动替你决定第二年，但它会改变所有人对下一次机会的判断。",
+          ? "教练在群里只发了一句“今晚开会”，随后上传了实验服尺寸表和第一轮集训安排。你把榜单截下来时仍有些不敢相信，直到队友开始讨论报到和外培，才意识到实验、国赛理论与那些只在联考榜上见过的全国对手已经成为现实。省队名额不是终点，它只是把接下来的训练突然变得具体而拥挤。"
+          : "你把最终名次和奖项记进档案，关闭了刷新了一整天的榜单。省赛已经结束，这张证书不会自动替你决定是否再用一年，也不会抹去成绩暴露出的差距；但父母、教练和同学从此都会带着这个结果讨论你的下一步。今晚仍没有必须立刻做出的选择，等情绪沉下来后，你还要判断这份不甘究竟值得多少时间。",
         effects: {
           coachFavor: entersTeam ? 5 : award === "省一等奖" ? 2 : -1,
           familySupport: entersTeam
@@ -3332,14 +3509,14 @@ function makeNamedProvincialAftermathEvent(
         id: `named-result-compare-${focus.rivalId}`,
         title: "把两人的分模块结果逐项比较",
         preview: "比较可能带来进步，也会延长考后的紧绷。",
-        result: `你们找到了差距最大的模块，也发现总分接近并不代表失分方式相同。榜单被拆回一道道具体的题，胜负感却没有完全消失。`,
+        result: `你们把四个模块的得分、犹豫题和时间分配逐项摊开，找到了差距最大的部分，也发现总分接近并不意味着失分方式相同：有人败在知识空白，有人则把会做的题留在最后。榜单被重新拆回一道道可以复盘的题，原本笼统的输赢因此有了可执行的方向；只是每次看见对方领先的那一栏，胜负感仍会从分析表格下面冒出来。`,
         effects: { reasoning: 0.5, problemSpeed: 0.5, san: -2, tags: [`${focus.rivalId}-联赛后对表`] },
       },
       {
         id: `named-result-distance-${focus.rivalId}`,
         title: "暂时不联系，让结果先沉淀一周",
         preview: "保持距离也是一种处理方式。",
-        result: "你关掉榜单，没有立刻把祝贺、遗憾或不甘投向另一个人。有些关系经得住停顿，有些张力则会被这次沉默留下。",
+        result: "你关掉榜单，也暂时退出不断更新的群聊，没有立刻把祝贺、遗憾或不甘投向另一个人。接下来一周，你几次点开对话框，又觉得任何一句话都像在借名次索要回应，于是重新按灭屏幕。这段停顿让情绪有机会从比赛结果里分离，也让对方无法知道你是在体谅、逃避还是疏远；有些关系经得住安静，有些张力则会被未说明的沉默留下。",
         effects: { san: 1.5, mindset: 0.3, peerFavor: -0.5 },
       },
     ],
@@ -3362,7 +3539,7 @@ function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
         id: `national-camp-experiment-${attemptNumber}`,
         title: "额外参加实验强化外培",
         preview: "实验增长更快 · 理论自由时间更少 · SAN -2",
-        result: "你开始在不同实验室之间轮转。离心机、显微镜和解剖台逐渐取代普通课桌。",
+        result: "你接受了额外实验安排，开始在几间设备和规程都不同的实验室之间轮转。第一次离心时你因为配平被叫停，解剖课上也不得不重新适应刀具，但记录表上逐渐少了低级失误。离心机、显微镜和解剖台取代了大部分普通课桌，手上的熟练度确实增长；与此同时，理论整卷只能被压到晚间，恢复时间也比计划中更快消失。",
         effects: {
           experiment: 3,
           san: -2,
@@ -3373,7 +3550,7 @@ function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
         id: `national-camp-theory-${attemptNumber}`,
         title: "额外参加文献题与理论模考",
         preview: "思辨增长更快 · 实验训练主要依赖本校教练安排",
-        result: "外培群每天发来论文和整卷。你仍参加教练报名的实验课，但额外时间几乎全部留给理论。",
+        result: "外培群从第一天起便不断上传论文、图表题和限时整卷，你把额外时段几乎全留给文献阅读与理论模考。教练报名的基础实验课仍照常参加，但你不再追加操作训练，更多时候只在纸面上推演实验结果。几周后，陌生材料不再轻易打乱节奏，理论判断也更连贯；只是当同队成员讨论仪器手感时，你清楚这条路线把风险留在了另一端。",
         effects: {
           reasoning: 2.5,
           san: -1,
@@ -3384,7 +3561,7 @@ function makeNationalCampChoiceEvent(attemptNumber: 1 | 2): GameEvent {
         id: `national-camp-balanced-${attemptNumber}`,
         title: "只跟本校教练安排，保留恢复时间",
         preview: "实验与理论均衡 · 心态 +2 · 教练好感 +1",
-        result: "你拒绝在本校已报名的外培之外再叠一套课表。空下来的时间不多，但足以维持睡眠和复盘。",
+        result: "你没有追着其他学校的课表继续加码，只完成本校教练已经报名的实验与理论训练，并把空出的晚上固定留给复盘和睡眠。看见外培群晒出新题时，你仍会担心自己少学了一层，教练也要求你用阶段成绩证明这不是懈怠。好在课程之间终于留下了消化的间隙，错题能够回到教材，操作失误也能在下一次训练前被真正整理。",
         effects: {
           mindset: 2,
           coachFavor: 1,
@@ -3422,14 +3599,14 @@ function makeNationalOpeningEvent(
         id: `national-opening-network-${attemptNumber}`,
         title: "和外省熟人交换队徽，观察全国对手",
         preview: "社交 +2 · 同学好感 +1 · SAN -1",
-        result: "几个只在群头像里见过的人终于有了真实声音。你也看见某些强手和普通高中生一样紧张。",
+        result: "你带着本省队徽走进人群，和几个只在培训群头像里见过的选手第一次面对面说话。有人交换当地题库的传闻，有人只问食堂在哪，榜单上长期靠前的名字也会因为下午考试反复确认准考证。短短半小时没有带来决定胜负的情报，却让“全国对手”从一排抽象名次变回具体的人；回房时，你口袋里多了几枚队徽，也少了一点面对传说的畏惧。",
         effects: { social: 2, peerFavor: 1, san: -1 },
       },
       {
         id: `national-opening-rest-${attemptNumber}`,
         title: "仪式结束后立刻回房休息",
         preview: "SAN +2 · 心态 +1",
-        result: "队友还在楼下拍照，你已经关掉手机。下午的卷子不会因为多认识一个人变容易。",
+        result: "仪式结束后，你向队友说明一声便直接回房，拉上窗帘，把手机调成勿扰。楼下合影和交换队徽的消息仍不断弹出，你没有逐条点开，只按计划吃完东西、躺了二十分钟，再检查一次文具。你错过了一些认识外省选手的机会，却保住了下午最稀缺的清醒。卷子不会因为社交变容易，也不会因为多看一页突然改变；至少入场时，你的手没有一直发抖。",
         effects: { san: 2, mindset: 1 },
       },
     ],
@@ -3449,6 +3626,20 @@ function nearestNamedNationalResult(
     const rankB = stage === "theory" ? b.theoryRank : b.finalRank;
     return aStory - bStory || Math.abs(rankA - playerRank) - Math.abs(rankB - playerRank);
   })[0];
+}
+
+function makeNationalListRevisionEvent(attempt: NationalAttempt): GameEvent {
+  const source = weeklySocialEvents.find((event) => event.id === "national-list-midnight-revision");
+  if (!source) throw new Error("缺少国赛名单深夜更正事件");
+  return {
+    ...source,
+    id: `national-${attempt.attemptNumber}-list-revision`,
+    phase: "exam",
+    label: "全国决赛 · 实验名单深夜更正",
+    archive: { category: "赛事与考试", group: "国赛流程", clusterKey: "national-list-revision", variantKey: String(attempt.attemptNumber), variantLabel: `第${attempt.attemptNumber}次国赛`, timingNote: "仅在理论晋级实验后、实验考试开始前触发" },
+    trigger: { earliestWeek: attempt.theoryWeek, latestWeek: attempt.theoryWeek },
+    choices: source.choices.map((choice) => ({ ...choice, id: `${choice.id}-${attempt.attemptNumber}` })),
+  };
 }
 
 function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
@@ -3495,8 +3686,8 @@ function makeTheoryNightEvent(attempt: NationalAttempt): GameEvent {
           ? "解锁四科实验考试 · SAN -2 · 心态 +2"
           : "SAN -3 · 心态 -2",
         result: attempt.qualifiedForExperiment
-          ? "教练不再分析理论题，只检查实验服、文具和集合时间。现在没有任何补理论的意义。"
-          : "你仍然留在代表队中，却第一次清楚地感到自己与实验考场隔着一道名单。",
+          ? "教练把所有还在争论的理论题收起来，不再允许任何人复盘，只逐项检查实验服、文具、分组编号和集合时间。你几次想确认某道题是否选错，最终还是把手机放下，因为现在没有任何补理论的意义。名单把下一步写得十分清楚：今晚要做的是吃饭、睡觉，并让双手准备好应对明天四个完全不同的实验板块。"
+          : "你把准考证收回文件袋，仍按要求留在代表队驻地，却不再需要准备第二天的实验服。走廊另一端，进入前240名的队员正在核对分组和集合时间，那些声音近得可以听清，却与你的日程隔着一道名单。没有哪道理论题还能重做，也没有额外机会证明操作能力；你第一次必须在比赛尚未完全结束时，接受自己的考试部分已经抵达终点。",
         effects: {
           san: attempt.qualifiedForExperiment ? -2 : -3,
           mindset: attempt.qualifiedForExperiment ? 2 : -2,
@@ -3530,14 +3721,14 @@ function makeNationalRestEvent(attempt: NationalAttempt): GameEvent {
         id: `national-rest-walk-${attempt.attemptNumber}`,
         title: "和队友出去走走，不再对答案",
         preview: "SAN +4 · 同学好感 +2",
-        result: "你们第一次聊起竞赛之外的生活。没有人能从这顿饭里推算出明天的名次。",
+        result: "你们把手机留在包里，沿着酒店外的街走到一家普通小店，约好谁都不许用餐具复现实验步骤。起初话题几次又滑回成绩，后来终于聊到各自学校的食堂、回家后最想补的觉，以及如果不学竞赛会参加什么社团。那顿饭没有提供任何可以推算名次的新证据，却让四场实验从脑中暂时退场。回酒店时，结果仍未知，你们却重新像一群考试之外也有生活的人。",
         effects: { san: 4, peerFavor: 2 },
       },
       {
         id: `national-rest-estimate-${attempt.attemptNumber}`,
         title: "留在酒店继续回忆实验细节",
         preview: "估分信息增加 · SAN -3 · 心态 -1",
-        result: "你列出了一张越来越长的可能失分表。它没有改变任何操作，却占据了整个下午。",
+        result: "你留在房间，把四场实验按操作、记录和解释重新过了一遍。每想起一个细节，便在纸上增加一种可能扣分的情况；清单从半页长到两页，连原本确信的步骤也开始显得可疑。你没有得到官方评分标准，更无法回去改变任何操作，却用整个下午反复审判已经结束的自己。晚饭时别人谈起城市见闻，你只能记得那支移液枪究竟有没有回到正确刻度。",
         effects: { san: -3, mindset: -1 },
       },
       ...(nearby
@@ -3567,7 +3758,7 @@ function makeNationalExperimentEvent(attempt: NationalAttempt): GameEvent {
       ...attempt.experimentScores.map(
         (item) => `${item.name}：现场表现 ${formatNumber(item.score)}`,
       ),
-      `实验T分 ${formatNumber(attempt.experimentT)}。操作、记录和解释彼此牵连，理论掌握只能帮助你理解任务，无法替代手上的熟练度。`,
+      `实验T分 ${formatNumber(attempt.experimentT)}。操作、记录和解释彼此牵连，理论掌握只能帮助你理解任务，无法替代手上的熟练度。四份记录纸已经交回，所有临场犹豫都被封进评分流程；你现在能做的只有离开实验楼，让那些无法再修改的步骤等待统一换算。`,
     ],
     trigger: { earliestWeek: 1, latestWeek: 120 },
     choices: [
@@ -3575,7 +3766,7 @@ function makeNationalExperimentEvent(attempt: NationalAttempt): GameEvent {
         id: `national-experiment-finish-${attempt.attemptNumber}`,
         title: "交回最后一份记录纸，离开实验楼",
         preview: "四科实验完成 · SAN -5",
-        result: "最后一场铃响时，你已经没有精力核对任何细节。考试结束了，剩下的排名不再由新的学习改变。",
+        result: "最后一场铃响后，监考员从你手边收走记录纸，你才发现手套里全是汗。走出实验楼时，上午的切片、下午的操作和几处不确定解释挤在一起，已经难以分清哪一个判断真正出错。你没有精力继续核对，只按集合要求跟着队伍回去。持续数年的学习在此刻停止影响这届比赛，剩下的换算、排名与奖牌，都不会再因今晚多看一页书而改变。",
         effects: { san: -5, mindset: -1 },
       },
     ],
@@ -3615,8 +3806,8 @@ function makeNationalAwardEvent(attempt: NationalAttempt): GameEvent {
           ? `${attempt.medal} · 解锁对应结局与后续评价`
           : "理论止步 · 返回学校后的路线仍需选择",
         result: hasFinalRank
-          ? "奖牌挂在胸前时比想象中轻。真正沉重的是过去几年被压缩进这一刻的时间。"
-          : "省队合影仍然有你的位置。结果已经确定，如何理解它还需要更长时间。",
+          ? "你走出礼堂才低头看清奖牌上的字。它挂在胸前时比想象中轻，合影、祝贺和教练的复盘安排却接连涌来，仿佛所有人都希望你立刻说出这几年究竟值不值得。真正沉重的不是金属，而是被压缩进这一刻的训练、争执和被放弃的普通日子。你记录下名次与分数，却没有急着替整个过程写结论。"
+          : "你仍站进省队合影，队服、姓名牌和身边的人都证明这趟国赛真实发生过，只是奖牌序列没有给你期待的回答。快门按下后，有人讨论下一届，有人安慰你至少来到这里，你却暂时听不进去。结果已经确定，训练和考试也全部结束；要把这次理论止步放进更长的人生里理解，而不是只当成一句失败，还需要比颁奖典礼更久的时间。",
         effects: {
           mindset:
             attempt.medal === "金牌"
@@ -3831,6 +4022,22 @@ function seededRivalIdentity(rival: Rival, seed: string) {
     "常用口头讲题检验理解，一旦讲不清就回教材查机制。",
     "学习时间不算最长，却很擅长在模考后找出高收益漏洞。",
   ];
+  const peerIndex = rivals
+    .filter((item) => item.scope === "school-peer")
+    .findIndex((item) => item.id === rival.id);
+  const stablePeerPersonalities = ["competitive", "playful", "curious", "warm"] as const;
+  const stablePeerConflicts = ["burden", "abandonment", "achievement", "family"] as const;
+  const randomPersonalityKey = (["reserved", "warm", "competitive", "playful", "curious"] as const)[Math.floor(token / 31) % 5];
+  const personalityKey = peerIndex >= 0
+    ? stablePeerPersonalities[peerIndex % stablePeerPersonalities.length]
+    : randomPersonalityKey;
+  const personalityDescriptions = {
+    reserved: "话不多，但一旦讨论问题就会追问到证据链闭合",
+    warm: "耐心而有边界感，愿意共享方法但不喜欢替别人作决定",
+    competitive: "胜负欲写在脸上，考后却愿意坦率讲清自己的失误",
+    playful: "平时看起来松弛，总用玩笑缓冲压力，认真时反而格外直接",
+    curious: "好奇心很重，经常提出看似基础却直指漏洞的问题",
+  } as const;
   return {
     name: `${surnames[(token + rivalIndex * 17) % surnames.length]}${
       givenNames[
@@ -3838,8 +4045,9 @@ function seededRivalIdentity(rival: Rival, seed: string) {
           givenNames.length
       ]
     }`,
-    personality:
-      personalities[Math.floor(token / 13) % personalities.length],
+    personality: peerIndex >= 0
+      ? personalityDescriptions[personalityKey]
+      : personalities[Math.floor(token / 13) % personalities.length],
     studyStyle: methods[Math.floor(token / 29) % methods.length],
     temperament: [
       "reserved",
@@ -3849,21 +4057,10 @@ function seededRivalIdentity(rival: Rival, seed: string) {
       "competitive",
       "curious",
     ][Math.floor(token / 13) % 6],
-    personalityKey: ([
-      "reserved",
-      "warm",
-      "competitive",
-      "playful",
-      "curious",
-    ] as const)[Math.floor(token / 31) % 5],
-    innerConflictKey: ([
-      "abandonment",
-      "burden",
-      "achievement",
-      "distance",
-      "caretaking",
-      "family",
-    ] as const)[Math.floor(token / 53) % 6],
+    personalityKey,
+    innerConflictKey: peerIndex >= 0
+      ? stablePeerConflicts[peerIndex % stablePeerConflicts.length]
+      : (["abandonment", "burden", "achievement", "distance", "caretaking", "family"] as const)[Math.floor(token / 53) % 6],
     gender,
   };
 }
@@ -4090,7 +4287,7 @@ const retirementStageCopy: Record<
     title: "省队名单上没有你的名字，第二次机会忽然显得格外沉重。",
     body: [
       "有人劝你把第一次当作熟悉流程，也有人提醒你，继续一年意味着更深的常规缺口。",
-      "这次退赛既像止损，也像在最接近看清自身水平的时候转身。",
+      "这次退赛既像止损，也像在最接近看清自身水平的时候转身。桌上的两份计划分别通向继续冲刺和尽快回班，任何一份都无法证明另一条路必然错误；真正需要回答的，是你是否愿意为第二次机会继续承担更深的常规缺口与不确定。",
     ],
   },
   "second-team": {
@@ -4114,7 +4311,7 @@ const retirementStageCopy: Record<
     title: "两次机会已经用完，这一次“退赛”更接近被时间推离赛道。",
     body: [
       "竞赛书仍在桌上，但名单不会再为你改写。教练开始谈回班安排，家长询问常规缺口，同学们不知道该安慰还是沉默。",
-      "你仍需要亲口结束这段经历，并决定怎样理解此前的两年。",
+      "你仍需要亲口结束这段经历，并决定怎样理解此前的两年。它们可以被归结为一次没有进队的失败，也可以保留为真实改变过知识、关系与选择方式的时间。被赛制推离主线不等于情绪已经完成告别，最后的手续仍必须由你本人走完。",
     ],
   },
   "mid-course": {
@@ -4122,7 +4319,7 @@ const retirementStageCopy: Record<
     title: "没有一场明确的失败，但长期消耗本身也可能成为理由。",
     body: [
       "课程、笔记、模考和常规欠账同时堆在桌面上。你不是突然讨厌生物，只是开始怀疑继续投入是否仍然值得。",
-      "中途离开不会得到一个干净的结论，反而要面对每个人不同的解释。",
+      "中途离开不会得到一个干净的结论，反而要面对教练、家长和队友各自不同的解释。没有名单替你证明已经到了终点，也没有某次失败可以承担全部理由；你只能把长期消耗、仍然存在的兴趣和其他路线的代价同时摆出来，判断继续是否还是主动选择。",
     ],
   },
 };
@@ -4155,16 +4352,14 @@ function retirementScene(
           "最终省队名单公布后，教练把你的名字从下一阶段训练表里划掉。并不是你主动认输，而是高中阶段的联赛机会已经全部结束。",
           "接下来仍要处理资料、回班和常规缺口，但高三不会再开放竞赛学习行动。",
         ],
-        choices: [
-          {
-            id: "second-failure-confirm-end",
-            title: "确认结果，开始办理离队与回班",
-            preview: "强制结束竞赛主线 · 进入交接",
-            result: "你把最后一次成绩单收进文件夹。竞赛生涯至此结束，接下来要谈的是怎样回去，而不是还能不能再考一次。",
-            action: "advance",
-            effects: { san: -3, mindset: -2 },
-          },
-        ],
+        choices: ["first", "second", "third"].map((echo) => ({
+          id: `second-failure-confirm-end-${echo}`,
+          title: "确认结果，开始办理离队与回班",
+          preview: "",
+          result: "你把最后一次成绩单收进文件夹，和教练确认参赛资格已经不会再延续。此前总觉得还能靠下一次考试修正的错题、争执和遗憾，到这里都失去了第三次机会。竞赛生涯并没有用理想方式结束，但接下来的问题已经改变：不再是还能不能再考一次，而是怎样向班级、家人和自己交代这两年，并从明天开始把另一条生活真正接回来。",
+          action: "advance" as const,
+          effects: { san: -3, mindset: -2 },
+        })),
       };
     }
     if (flow.step === 1) {
@@ -4180,7 +4375,7 @@ function retirementScene(
             id: "second-failure-orderly-handover",
             title: "整理笔记与资料，认真完成交接",
             preview: "同学好感 +1 · 常规 +5 · SAN -2",
-            result: "你把公共资料留给还在队里的学弟学妹，也请班主任列出了第一轮补课清单。桌面被清空以后，事情终于有了边界。",
+            result: "你把公共讲义按模块归还书架，将自己的勘误和实验记录复印给仍在队里的学弟学妹，又请班主任列出回班后的第一轮补课清单。整理期间不断有人来问某份资料放在哪里，仿佛你仍是这间教室的一部分。直到桌面被彻底清空、姓名从值日表上划去，离开才终于有了边界；你带走私人笔记，也留下足够让后来者继续使用的痕迹。",
             action: "advance",
             effects: { peerFavor: 1, academics: 5, san: -2 },
           },
@@ -4188,7 +4383,7 @@ function retirementScene(
             id: "second-failure-leave-quietly",
             title: "不再复盘竞赛，先回班把生活接上",
             preview: "SAN +1 · 心态 -2 · 教练好感 -3",
-            result: "你没有参加最后一次训练复盘。教练对此不满，但班级课表从第二天起重新占满了你的时间。",
+            result: "你没有参加那场以“最后一次”为名的训练复盘，只在群里简短说明自己要先回班处理积欠课程。教练认为这是逃避，也没有回复你之后发去的告别消息；你则不愿再用一晚重新计算已经确定的结果。第二天，语文早读、数学作业和陌生的课程进度重新占满日程。竞赛没有得到完整收尾，但普通生活也不会等到所有情绪整理好才开始。",
             action: "advance",
             effects: { san: 1, mindset: -2, coachFavor: -3 },
           },
@@ -4199,14 +4394,14 @@ function retirementScene(
       label: "被迫退赛 · 竞赛生涯结束",
       title: "竞赛教室的座位空了出来，高三常规线从这里开始。",
       body: [
-        "这次没有“再给自己四周”的按钮。第二次联赛结果已经把竞赛主线封口，之后的学习、强基与高考都会按退赛后的经历继续。",
+        "这次没有“再给自己四周”的按钮。第二次联赛结果已经把竞赛主线封口，之后的学习、强基与高考都会按退赛后的经历继续。竞赛教室里的座位很快会交给下一届，原班的课表则已向前走过许多章。你不是在两条都保持原样的路线之间切换，而是在不可逆的结果之后，重新接住一段已经因竞赛经历改变过的普通高中生活。",
       ],
       choices: [
         {
           id: "second-failure-return-class",
           title: "正式离队，进入高三常规学习",
           preview: "结束竞赛主线 · 开始回班与高考流程",
-          result: "你抱着书走回原来的班级。下一张要面对的成绩单不再是联赛排名，而是六科总分。",
+          result: "离队手续完成后，你抱着常规教材回到原来的班级。熟悉的同学已经讲到你没见过的章节，课桌里还塞着离开前留下的旧卷子；班主任没有要求你立刻追平，只安排了第一轮补测。从这一周起，训练群的通知不再决定你的日程，下一张需要面对的成绩单也不再是联赛排名，而是六科总分。结束竞赛没有让压力消失，只是把它换成另一种更宽、更现实的形状。",
           action: "retire",
           effects: {
             academics: 5,
@@ -4238,7 +4433,7 @@ function retirementScene(
             id: "forced-retire-enter-talks",
             title: "承认现状，进入正式协商",
             preview: "持续两周的退赛协商开始",
-            result: "你没有立刻答应退出，但同意把这件事列入接下来两周的正式议程。",
+            result: "你承认目前的睡眠、常规成绩和训练状态确实无法继续被当作小波动，却没有在谈话当场答应退出。你们把退赛列入接下来两周的正式议程，约好由你整理真实时间表，家人说明底线，教练评估调整空间。问题因此不再靠一次争吵解决，也不能再被一句“下周会好”糊弄过去；你保留最终选择，同时承担提供事实和按期回应的责任。",
             action: "advance",
             effects: {
               san: fromCoach ? -5 : -4,
@@ -4251,7 +4446,7 @@ function retirementScene(
             id: "forced-retire-refuse",
             title: "明确拒绝，现在不退",
             preview: "保留竞赛路线 · 冲突升级",
-            result: "你保住了这一次决定权，但对方并没有因此认可你的选择。",
+            result: "你明确说自己现在不会退赛，也不会在一场争执里交出决定权。对方停下劝说，却没有因此认可你的选择，只把成绩单重新推到你面前，要求你对下一次结果负责。谈话在僵硬的沉默中结束，你保住了继续的资格，也更清楚这并不等于获得支持；接下来每次波动，都可能被重新拿来证明今天的坚持是否只是逞强。",
             action: "cancel",
             effects: {
               san: -5,
@@ -4270,7 +4465,7 @@ function retirementScene(
           id: "retire-think-seriously",
           title: "承认自己在认真考虑退赛",
           preview: "进入家长、教练与同伴协商",
-          result: "当“退赛”两个字真正写下来，它不再只是某个疲惫晚上的念头。",
+          result: "你承认自己不是随口抱怨，而是在认真考虑退赛，并把最难承受的几件事逐项写下来。纸面上的“退赛”比脑中的念头更具体：它意味着回班、补课、重新解释过去投入，也可能意味着终于停止一条不再适合的路线。对方没有立即劝你留下，只要求你区分暂时崩溃与长期判断。决定尚未作出，但它从此不再只是某个疲惫夜晚用来逃跑的想象。",
           action: "advance",
           effects: { san: -1 },
         },
@@ -4278,7 +4473,7 @@ function retirementScene(
           id: "retire-not-now",
           title: "现在还不做决定",
           preview: "暂时取消 · 四周内不能反复提出",
-          result: "你把这个念头保留下来。继续并不代表以后失去了离开的权利。",
+          result: "你没有在最疲惫的晚上提交申请，也没有假装退赛这个念头从未出现，只把它写进日记并标出一个重新评估的日期。第二天训练照常开始时，桌上的书没有突然变轻，但你知道继续四周并不等于承诺坚持到最后。离开的权利仍被保留，这让眼前的选择少了一点被困住的意味，也要求你在期限到来时诚实检查问题是否真的改善。",
           action: "cancel",
           effects: { san: -0.5, mindset: -0.5 },
         },
@@ -4313,7 +4508,7 @@ function retirementScene(
           preview: familyOpposes || coachRetains
             ? "可能发生激烈冲突 · 但减少长期误解"
             : "获得理解 · 进入最终决定",
-          result: "谈话持续了很久。没有人被立刻说服，但每个人终于在讨论同一个问题。",
+          result: "你把真正想退赛的原因全部说清：不仅是一次成绩，也包括持续失眠、对训练失去兴趣，以及回班成本不断增大的恐惧。谈话拖了很久，父母仍担心你后悔，教练也不同意你对能力的判断，没有任何人被当场说服。但争论终于围绕同一组事实展开，不再一个人谈名次、一个人谈身体、另一个人只谈投入。分歧仍在，却第一次有可能被逐项处理。",
           action: "advance",
           effects: {
             san:
@@ -4331,7 +4526,7 @@ function retirementScene(
           id: "retire-write-plan",
           title: "先拿出回班追赶计划，再谈退赛",
           preview: "常规积累 +8 · SAN -2 · 冲突较小",
-          result: "课程表、薄弱科目和补课节点让这场谈话从情绪争执变成了现实方案。",
+          result: "你没有只说“退赛后会好好学”，而是拿出班级课程表，标出已经断层的章节、可以求助的老师和第一轮补课节点。家人逐项追问时间，教练也提醒回班并不会自动追回排名。那张并不轻松的计划让谈话从情绪争执变成现实方案：退赛的代价第一次被看清，也因此不再被简单理解成逃跑；你需要证明的，是这条新路线确实能够开始。",
           action: "advance",
           effects: {
             academics: 8,
@@ -4344,7 +4539,7 @@ function retirementScene(
           id: "retire-back-down",
           title: "面对挽留，暂时收回申请",
           preview: "取消退赛 · SAN -2 · 心态 -1",
-          result: "你答应再坚持一段时间，却没有完全解决最初提出退赛的原因。",
+          result: "面对教练和队友的挽留，你暂时收回申请，答应按新的训练安排再坚持一段时间。大家明显松了口气，空出来的座位也被重新留给你；可最初促使你提出退赛的疲惫、常规课缺口或家庭压力并没有随一句答应消失。你为关系和可能性多留了一扇门，也需要警惕这段缓冲不要重新变成无限延期、只能靠忍耐维持的旧状态。",
           action: "cancel",
           effects: { san: -2, mindset: -1, coachFavor: 1 },
         },
@@ -4356,14 +4551,14 @@ function retirementScene(
     title: "所有意见都已经听过，最后仍需要你亲自确认。",
     body: [
       "留下不会保证下一次成功，离开也不会让常规缺口立刻消失。",
-      "确认退赛后将进入回班、高三、强基与高考流程；这段竞赛经历也会继续影响最终录取和成年后的生活。",
+      "确认退赛后将进入回班、高三、强基与高考流程；这段竞赛经历也会继续影响最终录取和成年后的生活。最后一次确认不是要求你证明此前投入值得，也不是把离开描述成轻松解脱，而是让所有协商、挽留与外界判断停下，由你本人承担这条路线从此怎样继续。",
     ],
     choices: [
       {
         id: "retire-confirm-final",
         title: "仍然决定退赛",
         preview: "结束竞赛路线 · 进入“您已退赛”页面",
-        result: "你最后一次整理竞赛教室里的位置，把仍想保留的笔记装进书包。",
+        result: "你仍然决定退赛，并按流程交回公共资料、取消后续报名。最后一次整理竞赛教室的位置时，你把队伍共用的讲义留在架上，只将写满批注的笔记和几张有纪念意义的卷子装进书包。有人劝你再想一晚，你却知道这次不是赌气离场。走廊尽头的训练声仍在继续，你带走了属于自己的部分，也接受以后不会再以参赛者身份坐回这里。",
         action: "retire",
         effects: {
           academics: 2,
@@ -4378,12 +4573,176 @@ function retirementScene(
         id: "retire-stay-final",
         title: "撤回申请，再给自己四周",
         preview: "取消退赛 · 四周冷静期 · 压力不会自动消失",
-        result: "你没有许诺一定坚持到最后，只把下一次决定推迟到四周以后。",
+        result: "你撤回申请，却没有许诺一定坚持到最后，而是在日历上圈出四周后的复盘日，并写下睡眠、常规成绩和训练完成率三项判断标准。教练接受了这个有期限的决定，家人仍觉得你在拖延，但至少每个人知道下次谈话会依据什么。接下来的训练不再只是咬牙撑住；这四周既是继续争取的机会，也是验证离开是否更合适的一段真实样本。",
         action: "cancel",
         effects: { mindset: -1, san: -2, coachFavor: -1 },
       },
     ],
   };
+}
+
+function retirementDeveloperCatalog(): GameEvent[] {
+  const supportiveStats = {
+    familySupport: 72,
+    coachFavor: 18,
+    peerFavor: 34,
+  } as PlayerStats;
+  const strainedStats = {
+    familySupport: 34,
+    coachFavor: 3,
+    peerFavor: 9,
+  } as PlayerStats;
+  const flows: Array<{ flow: RetirementFlow; stats: PlayerStats; suffix: string }> = [
+    ...(["early-failure", "after-medal", "mid-course"] as RetirementStage[]).flatMap(
+      (stage) => [0, 1, 2].map((step) => ({
+        flow: { stage, step: step as 0 | 1 | 2, initiatedBy: "self" as const },
+        stats: step === 1 ? supportiveStats : strainedStats,
+        suffix: `${stage}-${step}`,
+      })),
+    ),
+    ...([0, 1, 2] as const).map((step) => ({
+      flow: { stage: "second-failure" as const, step, initiatedBy: "eligibility" as const },
+      stats: strainedStats,
+      suffix: `second-failure-${step}`,
+    })),
+    {
+      flow: { stage: "mid-course", step: 0, initiatedBy: "family" },
+      stats: strainedStats,
+      suffix: "family-pressure",
+    },
+    {
+      flow: { stage: "mid-course", step: 0, initiatedBy: "coach" },
+      stats: strainedStats,
+      suffix: "coach-pressure",
+    },
+  ];
+  return flows.map(({ flow, stats, suffix }) => {
+    const scene = retirementScene(flow, stats);
+    return {
+      id: `developer-retirement-${suffix}`,
+      phase: "weekly",
+      label: scene.label,
+      title: scene.title,
+      body: scene.body,
+      trigger: { earliestWeek: 1, latestWeek: 104 },
+      concealConsequences: true,
+      choices: scene.choices.map(({ action: _action, ...choice }) => choice),
+    };
+  });
+}
+
+function pageFlowDeveloperCatalog(seed: string): GameEvent[] {
+  const events = new Map<string, GameEvent>();
+  const add = (event: GameEvent | null | undefined) => {
+    if (event) events.set(event.id, event);
+  };
+
+  for (let variant = 0; variant < 60 && events.size < 3; variant += 1) {
+    add(makeRoutineEvent(1, `${seed}-developer-routine-${variant}`));
+  }
+  for (let variant = 0; variant < 60; variant += 1) {
+    add(makeTrainingRoutineEvent(1, `${seed}-developer-training-routine-${variant}`));
+  }
+
+  const provincial = (attemptNumber: 1 | 2, enteredTeam: boolean): ProvincialAttempt => ({
+    attemptNumber,
+    examWeek: attemptNumber === 1 ? 45 : 97,
+    maxScore: PROVINCIAL_MAX_SCORE,
+    rawScore: enteredTeam ? 138 : 104,
+    estimateLow: enteredTeam ? 132 : 98,
+    estimateHigh: enteredTeam ? 144 : 110,
+    estimateRankLow: enteredTeam ? 3 : 150,
+    estimateRankHigh: enteredTeam ? 12 : 260,
+    draftScore: enteredTeam ? 138 : 104,
+    draftRank: enteredTeam ? 6 : 198,
+    appealDelta: enteredTeam ? 2 : 0,
+    participants: 1200,
+    firstPrizeEnd: 90,
+    secondPrizeEnd: 260,
+    thirdPrizeEnd: 520,
+    teamPlaces: 12,
+    competitionStrength: 1,
+    competitorScores: enteredTeam ? [150, 146, 144, 142, 140] : [150, 146, 142, 138, 134, 130, 126, 122, 118, 114, 110, 108, 106, 105],
+    namedResults: [],
+    breakdown: [
+      { name: "第一模块", score: 36, maxScore: 40, rate: 90, correct: 18, total: 20 },
+      { name: "第二模块", score: 34, maxScore: 40, rate: 85, correct: 17, total: 20 },
+      { name: "第三模块", score: 32, maxScore: 40, rate: 80, correct: 16, total: 20 },
+      { name: "第四模块", score: 30, maxScore: 40, rate: 75, correct: 15, total: 20 },
+    ],
+    finalScore: enteredTeam ? 140 : 104,
+    finalRank: enteredTeam ? 6 : 198,
+    enteredTeam,
+    finalAward: enteredTeam ? "省一等奖" : "省二等奖",
+  });
+  const provincialOne = provincial(1, true);
+  const provincialTwo = provincial(2, false);
+  for (const attempt of [provincialOne, provincialTwo]) {
+    add(makeHotelEvent(attempt.attemptNumber));
+    add(makePostExamRouteEvent(attempt.attemptNumber));
+    add(makeEvaluationDraftEvent(attempt));
+    add(makeOfficialResultEvent(attempt, []));
+    add(makeNationalCampChoiceEvent(attempt.attemptNumber));
+    add(makeNationalOpeningEvent(attempt.attemptNumber, seed));
+  }
+
+  const national = (attemptNumber: 1 | 2, qualified: boolean): NationalAttempt => ({
+    attemptNumber,
+    theoryWeek: attemptNumber === 1 ? 58 : 110,
+    participants: 600,
+    theoryRaw: qualified ? 82 : 58,
+    theoryT: qualified ? 61 : 45,
+    theoryRank: qualified ? 118 : 310,
+    qualifiedForExperiment: qualified,
+    experimentScores: qualified
+      ? ["细胞生物学", "植物学", "动物学", "生态学"].map((name, index) => ({ name, score: 72 - index * 3 }))
+      : [],
+    experimentT: qualified ? 58 : 0,
+    finalScore: qualified ? 58.9 : 45,
+    finalRank: qualified ? 132 : null,
+    medal: qualified ? "银牌" : "铜牌",
+    namedResults: [],
+  });
+  for (const attempt of [national(1, true), national(2, false)]) {
+    add(makeTheoryNightEvent(attempt));
+    if (attempt.qualifiedForExperiment) add(makeNationalListRevisionEvent(attempt));
+    add(makeNationalRestEvent(attempt));
+    if (attempt.qualifiedForExperiment) add(makeNationalExperimentEvent(attempt));
+    add(makeNationalAwardEvent(attempt));
+  }
+
+  const sampleStats = {
+    familySupport: 55,
+    coachFavor: 12,
+    peerFavor: 25,
+    san: 58,
+  } as PlayerStats;
+  const calendar = calendarFor(2026, 1);
+  // 编辑器目录不依赖某一个种子碰巧抽到哪些家庭场景：每个独立场景 × 4 种家长
+  // 都显式生成，运行中的随机节奏仍由 makeFamilyWeeklyEvent 自己控制。
+  for (let sceneIndex = 0; sceneIndex < familyWeeklySceneCatalog.length; sceneIndex += 1) {
+    for (const profile of familyProfiles) {
+      add(
+        makeFamilyWeeklyEvent(
+          8 + sceneIndex,
+          seed,
+          profile,
+          sampleStats,
+          ["第1次省赛-进入省队"],
+          [],
+          sceneIndex,
+        ),
+      );
+    }
+  }
+  for (let week = 1; week <= 120; week += 1) {
+    for (const profile of familyProfiles) {
+      add(makeFamilyCheckpointEvent(week, seed, profile, sampleStats, ["第1次省赛-进入省队", "第2次省赛-进入省队", "关系:示例:正式恋爱"], [], calendar));
+    }
+    add(makeExternalDepartureEvent(week, seed, [], []));
+    add(makeTeammateDepartureEvent(week, seed, 12, 12, [], calendar, {}, [],));
+  }
+  return [...events.values()];
 }
 
 function makeTeammateDepartureEvent(
@@ -4449,7 +4808,7 @@ function makeTeammateDepartureEvent(
       title: waveTitle,
       body: [
         waveBody,
-        `这一周共有 ${leaving} 人停止训练，在队人数从 ${activeTeamSize} 变成 ${after}。留下的人重新分座位，也重新判断自己是不是还愿意继续。`,
+        `这一周共有 ${leaving} 人停止训练，在队人数从 ${activeTeamSize} 变成 ${after}。留下的人重新分座位，也重新判断自己是不是还愿意继续。空出来的不只是桌椅，还有原本默认会一起经历下一场考试的人；每一次离开都让继续训练从惯性重新变成需要本人回答的选择。`,
       ],
       trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
       choices: [
@@ -4457,21 +4816,21 @@ function makeTeammateDepartureEvent(
           id: `wave-hold-${targetWeek}`,
           title: "帮忙整理留下的资料，也送他们回班",
           preview: "同学好感 +3 · SAN -3 · 心态 -1",
-          result: "你把散落的讲义按名字分好。走廊尽头有人回头挥手，教室里则安静得能听见翻页声。",
+        result: "你留下来帮几名退赛队员整理资料，把公共讲义、私人笔记和需要归还的书逐一按名字分开，又陪他们走到原班门口。一路上没有人认真谈告别，只讨论缺了哪些课程和午休去哪吃饭。走廊尽头，有人抱着书回头挥手；你返回竞赛教室时，空下的座位已经收拾干净，屋里安静得能听见翻页声。帮忙完成交接，也让离开这件事第一次有了具体形状。",
           effects: { peerFavor: 3, san: -3, mindset: -1, tags: ["经历退赛潮"] },
         },
         {
           id: `wave-focus-${targetWeek}`,
           title: "不讨论去留，把自己的下一阶段计划排满",
           preview: "做题速率 +1.5 · 教练好感 +1 · SAN -4",
-          result: "你把空出来的桌面铺满卷子。效率确实提高了，但那几把椅子仍不断提醒你：留下也是一种选择。",
+          result: "你没有参加关于去留的讨论，而是把空出来的桌面铺满下一阶段卷子，用更密集的任务阻止自己反复猜测。少了闲聊和等待，效率确实提高，排名目标也被重新写得清楚；但每次起身拿资料，那几把椅子仍会进入视线。别人离开以后，留下不再只是按惯性继续上课，它同样是一项需要承担时间、机会成本和未来解释的选择。",
           effects: { problemSpeed: 1.5, coachFavor: 1, san: -4, tags: ["退赛潮后加练"] },
         },
         {
           id: `wave-rethink-${targetWeek}`,
           title: "和家长认真谈一次自己的退路",
           preview: "家庭支持 +2 · 常规 +4 · 心态 -1",
-          result: "你们没有立刻得出结论，但第一次把继续竞赛和回班之后分别要做什么都写在了纸上。",
+        result: "你主动和家长谈起自己的退路，没有用“肯定能进省队”结束问题，而是把继续竞赛与现在回班分别需要的时间、费用和最坏结果写在同一张纸上。家人对其中几项估计并不认同，也担心你是在为失败预留借口，谈话因此持续很久。你们没有立刻得出结论，却第一次拥有两份可比较的现实方案；退路不再只在情绪崩溃时出现。",
           effects: { familySupport: 2, academics: 4, mindset: -1, tags: ["退赛潮后讨论退路"] },
         },
       ],
@@ -4575,6 +4934,30 @@ function makeTeammateDepartureEvent(
       ? hashSeed(`${seed}-family-reason-${targetWeek}`) % 2
       : hashSeed(`${seed}-departure-reason-${targetWeek}`) % reasons.length;
   const reason = reasons[reasonIndex];
+  const persuasionSuccessResults = [
+    `${rival.name}没有说服家里撤回反对，只争取到两周暂停期。TA先退出晚训，保留校内课程，也答应两周后由自己重新决定。你没有把TA劝回原来的强度，却让一次当场终止变成仍有本人意愿的位置；家庭争论仍在，之后的答案未必是回来。`,
+    `${rival.name}同意先不提交退赛申请，把两周用于补最危险的常规章节。TA回到竞赛教室的次数减少，也不再参加所有模考。暂停让两条路线都获得真实数据，却使训练连续性进一步下降；两周后是否留下，要看TA愿意承担哪一种缺口。`,
+    `${rival.name}决定等学校和教练核实政策后再作最终选择，不再只凭家长群转述离开。TA暂时保留训练名额，也把另一条升学路线一起准备。信息核验争取了时间，没有取消政策风险；最终选择仍可能与今天相同，只是不再由一条未经确认的消息替TA完成。`,
+    `${rival.name}接受完整停训两周，而不是直接注销资格。TA先睡觉、就医，也把群消息全部静音。你争取到的不是继续拼，而是一段真正判断身体能否恢复的时间；若耗竭没有好转，离开仍会发生，而且不该被理解成你的挽留失败。`,
+    `${rival.name}答应保留一次生物训练，借两周比较新路线与旧兴趣，而不是当晚删除全部安排。TA可能因此确认转向，也可能发现仍舍不得这里。你保住选择的可逆性，没有获得TA必须回来的承诺；新方向同样值得被认真尝试。`,
+    `${rival.name}同意把退赛决定延后到下一次完整模考，并降低这两周的训练强度。TA不再把模拟排名当作正式判决，也没有假装机会成本不存在。观察期提供另一组证据，同时让那场模考背上更重意义；结果仍可能支持离开。`,
+    `${rival.name}接受医生建议，先退出晚训与外培，两周后根据睡眠和胃痛恢复决定。TA仍偶尔来教室取资料，不再用出勤证明意志。你帮助TA把“暂停”与“失败”分开，也必须接受健康恢复优先于是否重返队伍。`,
+    `${rival.name}没有立刻回到原教练安排，只同意在两周内尝试一套边界更清楚的训练：任务提前确认，争议由第三位老师参与。TA保留竞赛，不等于原谅过去的沟通。若新安排仍重复旧问题，离开将是经过验证的选择。`,
+    `${rival.name}答应不在兴趣刚转移时立刻清空所有竞赛联系，每周保留一次自由阅读。TA没有承诺重新热爱，也不把新爱好当作背叛旧投入。两周后可能回来，也可能更确定离开；你争取的是允许兴趣变化得慢一点。`,
+    `${rival.name}同意暂不办理彻底退赛，只把训练降到不会占用家庭所需时间的最低水平。TA没有解释家里发生什么，你也不再追问。保留资格给未来留门，同时尊重眼下生活已经改变；是否回来只能由TA在家庭状况允许时回答。`,
+  ];
+  const persuasionFailureResults = [
+    `${rival.name}谢谢你愿意挽留，却说两周暂停无法改变家里的决定。继续私下坚持只会让TA在家与学校之间承担更大冲突。你让告别获得一次完整谈话，没有因此拥有替TA对抗家庭的权利；TA最终回班，也答应以后仍可联系。`,
+    `${rival.name}认真算过欠下的课程，认为两周不足以同时验证两条路线，只会让返班缺口继续扩大。TA没有否定竞赛经历，也不把你的挽留当作压力。选择回班是对当前时间的分配，不是承认此前全部错误；你只能尊重这项取舍。`,
+    `${rival.name}认为即使传言最终有偏差，家庭对政策不确定性的承受已经到极限。TA不愿再用一年等待规则稳定。你的核验建议合理，却不能替另一个家庭接受风险；离开基于他们愿意承担什么，而非哪条消息绝对正确。`,
+    `${rival.name}说自己现在需要的不是短暂停顿后重新追赶，而是结束那种醒来就欠任务的生活。挽留让TA知道有人在意，也可能把恢复再次变成回归考核。TA选择完整离开，把健康从一项恢复训练的工具变回生活本身。`,
+    `${rival.name}没有接受试行两周，因为新路线并非冲动，而是已经持续很久的兴趣。继续保留生物训练只会挤占真正想投入的事。TA感谢你没有把转向叫作失败，也明确表示关系可以留下，赛道不必为了关系一起留下。`,
+    `${rival.name}拒绝让下一次模考成为最后审判，认为自己已经用足够多次排名评估过机会。多等两周可能出现偶然好成绩，也不会改变愿意投入的时间。你的挽留被认真听见，TA仍选择把有限时间交给更确定的路线。`,
+    `${rival.name}说检查结果只是最后提醒，真正的问题是身体状态已经持续数月。暂停后再回到同样作息只会重复循环。TA选择退出晚训也退出赛道，不再把恢复目标设成尽快重新参赛；健康因此获得没有附加条件的位置。`,
+    `${rival.name}不愿再用两周试验一段已经多次失败的教练关系。问题不是一场争执，而是长期否定和失去信任。你无法通过友情替双方修复训练结构；TA留下资料、离开队伍，也保留以后在别处继续学习生物的可能。`,
+    `${rival.name}说自己已经试过在两条兴趣之间保留最低投入，结果只是每件事都做得疲惫。TA选择把生物竞赛完整放下，让新生活真正获得时间。你的挽留确认了旧经历有人珍惜，却不能要求兴趣为了共同记忆继续存在。`,
+    `${rival.name}没有说明家庭细节，只说两周后责任也不会自动消失。此时保留最低训练仍会占用TA需要交给家人的注意力。你停止追问，接受关系能提供的只是理解，不是替TA承担现实；离开因而成为边界，而非突然消失。`,
+  ];
   const aftermaths = [
     `${rival.name}最后一次打卡停在周三。之后，竞赛队从 ${activeTeamSize} 人变成了 ${activeTeamSize - 1} 人。`,
     `实验柜里多出一件洗净叠好的白大褂，袖口写着${rival.name}的名字。队伍还剩 ${activeTeamSize - 1} 人。`,
@@ -4616,10 +4999,10 @@ function makeTeammateDepartureEvent(
             {
               id: `departure-persuade-${persuasionSucceeds ? "success" : "fail"}-${rival.id}`,
               title: "认真问TA：能不能先暂停两周，再决定是否彻底离开",
-              preview: `你们的羁绊会影响TA是否愿意留下（当前劝回可能约 ${Math.round(persuadeChance * 100)}%）`,
+              preview: "",
               result: persuasionSucceeds
-                ? `${rival.name}没有立刻答应继续，只同意把退赛申请压在抽屉里两周。之后TA重新回到训练群，强度比以前低，但没有从你的生活里突然消失。`
-                : `${rival.name}认真听完了你的话，也谢谢你愿意挽留。可是这次决定牵涉家长、常规和长期耗竭，羁绊能让告别更诚实，却不能替TA承担全部代价。`,
+                ? persuasionSuccessResults[reasonIndex]
+                : persuasionFailureResults[reasonIndex],
               effects: {
                 peerFavor: persuasionSucceeds ? 3 : 2,
                 san: persuasionSucceeds ? -1 : -3,
@@ -4636,9 +5019,9 @@ function makeTeammateDepartureEvent(
       {
         id: `departure-message-${rival.id}`,
         title: "私下发消息，问对方以后是否还愿意联系",
-        preview: "同学好感 +2 · SAN -2 · 保留好友线",
+        preview: "",
         result:
-          "你们没有急着总结这段经历，只约定下次月考后一起吃饭。退赛改变了共同话题，却没有立即结束关系。",
+          "你私下发消息，问对方回班以后是否还愿意联系，没有把问题包装成资料交接或最后一次复盘。对方隔了一会儿才回复，说眼下还不知道以后能聊什么，但可以等下次月考结束一起吃饭。你们没有急着总结这段竞赛经历，也没有许诺关系绝不会改变；退赛确实拿走了每天共同出现的理由，却没有替两个人决定通讯录里的名字从此失效。",
         effects: {
           peerFavor: 2,
           san: -2,
@@ -4648,9 +5031,9 @@ function makeTeammateDepartureEvent(
       {
         id: `departure-reflect-${rival.id}`,
         title: "重新计算自己的时间与退路",
-        preview: "常规积累 +4 · 心态 -1 · 思辨 +0.5",
+        preview: "",
         result:
-          "你在计划表旁加了一栏“如果现在退出”。它没有让你立刻退赛，却让继续这件事不再完全依靠惯性。",
+          "你在原本只有训练任务的计划表旁新增一栏“如果现在退出”，逐项写下回班章节、可用时间、需要求助的人和最坏的排名变化。那一栏没有让你立刻提交申请，反而让继续训练时少了一点被困住的恐慌。竞赛仍是当前选择，却不再是因为看不见其他道路才被动维持；从此每一个月，你都能重新比较留下的理由是否仍然成立。",
         effects: {
           academics: 4,
           mindset: -1,
@@ -4661,9 +5044,9 @@ function makeTeammateDepartureEvent(
       {
         id: `departure-train-harder-${rival.id}`,
         title: "把空出来的位置理解成更大的责任",
-        preview: "思辨 +1 · 教练好感 +1 · SAN -3",
+        preview: "",
         result:
-          "下一次训练你比平时更早到教室。只是翻开卷子时，你仍会下意识看向那个已经空掉的位置。",
+          "你把退赛后空出来的位置理解成留队者需要承担的责任，下一次训练比平时早到半小时，主动整理资料并补上原本由对方负责的记录。教练认可这种变化，任务也确实推进得更快。可当你翻开卷子、准备把一道熟悉题型递过去讨论时，视线仍会下意识落在那张空椅上。责任让队伍继续运转，却不会自动替代一个具体的人。",
         effects: {
           reasoning: 1,
           coachFavor: 1,
@@ -4675,106 +5058,91 @@ function makeTeammateDepartureEvent(
   };
 }
 
+type FamilyProfile = (typeof familyProfiles)[number];
+
+
 function makeFamilyWeeklyEvent(
   targetWeek: number,
   seed: string,
-  profile: (typeof familyProfiles)[number],
+  profile: FamilyProfile,
   stats: PlayerStats,
   storyTags: string[],
   resolvedEvents: string[],
+  forcedSceneIndex?: number,
 ): GameEvent | null {
-  if (targetWeek < 8 || targetWeek % 7 !== hashSeed(`${seed}-family-rhythm`) % 7)
-    return null;
-  if (seededUnit(`${seed}-family-event-${targetWeek}`) > 0.66) return null;
-  const id = `family-weekly-${targetWeek}`;
-  if (resolvedEvents.includes(id)) return null;
+  if (forcedSceneIndex === undefined) {
+    if (targetWeek < 8 || targetWeek % 7 !== hashSeed(`${seed}-family-rhythm`) % 7)
+      return null;
+    if (seededUnit(`${seed}-family-event-${targetWeek}`) > 0.66) return null;
+  }
   const preparingForNational =
     (storyTags.includes("第1次省赛-进入省队") &&
       !storyTags.some((tag) => /^第1次国赛-/.test(tag))) ||
     (storyTags.includes("第2次省赛-进入省队") &&
       !storyTags.some((tag) => /^第2次国赛-/.test(tag)));
-  const scenes = [
-    ["饭桌上的成绩截图", "父母从家长群里看见了这次考试。截图只有名次，没有你在考场上经历的那些犹豫。"],
-    ["回家路上的十分钟", "父母来接你时没有立刻问分数，只问最近是不是总在凌晨才睡。车窗外的路灯一盏盏掠过去。"],
-    ["一本被翻过的教材", "你发现父母试着读了教材目录。他们仍然不懂那些名词，却第一次意识到这不是几张卷子的投入。"],
-    ["亲戚饭局后的追问", "亲戚拿另一位同龄人的常规排名作比较。回家后，父母也显得比平时更焦虑。"],
-    ["培训报销单之外", "父母把培训、住宿与个人零花钱分开列在纸上，想知道你真正缺的是钱、休息，还是一句允许停下。"],
-    ["一次没有结论的散步", "晚饭后，你们绕小区走了两圈。父母没有保证永远支持，你也没有保证一定得奖。"],
-    ["教练打来的电话", "教练向家长汇报了近况。父母听见的是进度、排名和风险，而你更在意那些没有被电话说出的疲惫。"],
-    ["发烧那天的书包", "你带着低烧仍想去训练。父母把竞赛书从门口拿回房间，第一次明确说成绩不能排在身体前面。"],
-    ["省队名单之后的安静", preparingForNational ? "进入省队后，家里很少再提立刻退赛。新的担忧变成实验安全、睡眠和八月之后该怎么走。" : "家里对竞赛的态度仍在摇摆，但这一晚没有人要求你立即作决定。"],
-    ["一次考得不错的周末", "成绩比预期好。父母没有把它说成理所当然，而是问你想吃什么，愿不愿意暂时不复盘。"],
-    ["快递盒里的培训讲义", "父母签收了机构寄来的资料。纸张比想象中厚，他们第一次把‘再学一阵’换算成了接下来许多个周末。"],
-    ["班主任的一句提醒", "班主任在家校联系里写下‘常规作业缺交’。父母没有立刻责骂，却把这句话放在饭桌上等你解释。"],
-    ["凌晨还亮着的台灯", "父母半夜起床时看见你仍在订正卷子。有人想催你睡，有人又怕关灯会打断你仅剩的一点信心。"],
-    ["一次被取消的家庭出行", "原定的周末出行撞上集训。父母改了车票，但也第一次认真问：竞赛是不是正在占满全家的时间。"],
-    ["家长群里的经验帖", "另一位家长发来一篇很长的经验帖，里面既有保送喜报，也有退赛后追赶常规的故事。父母读完后比之前更难给出简单答案。"],
-    ["消息栏里过长的聊天", storyTags.some((tag) => tag.includes("正式恋爱")) ? "父母无意间看见你和一个同学聊到很晚。他们在意的不只是早恋，也担心你把恢复睡眠的时间再次交了出去。" : "父母无意间看见你在竞赛群里聊到很晚。他们分不清讨论题目和闲聊的界线，只看见第二天早晨你仍然起不来。"],
-    ["培训返程时的一袋水果", "父母没有进教室，只在车站把水果和换洗衣服塞进你的包里。问起模考时，他们努力把语气放得像普通问候。"],
-    ["父母试做的一道题", "父母从你摊开的卷子里挑了一道题，读到一半就放弃了。那一点笨拙没有解决任何问题，却让‘你怎么还没学完’少出现了一次。"],
-  ] as const;
-  const [title, body] = scenes[hashSeed(`${seed}-family-scene-${targetWeek}`) % scenes.length];
+  const hasImportantRelationship = storyTags.some((tag) =>
+    tag.includes("正式恋爱") || tag.includes("朦胧好感") || tag.includes("确认挚友"),
+  );
+  const eligibleFamilyScenes = forcedSceneIndex === undefined
+    ? familyWeeklySceneCatalog.filter((candidateScene) => {
+        if (candidateScene.key === "teacher-note") return stats.regularNeglectWeeks >= 1;
+        if (candidateScene.key === "fever-bag") return stats.san <= 54;
+        if (candidateScene.key === "late-chat") return hasImportantRelationship || stats.peerFavor >= 38;
+        return true;
+      })
+    : familyWeeklySceneCatalog;
+  if (!eligibleFamilyScenes.length) return null;
+  const scene = forcedSceneIndex === undefined
+    ? eligibleFamilyScenes[hashSeed(`${seed}-family-scene-${targetWeek}`) % eligibleFamilyScenes.length]
+    : familyWeeklySceneCatalog[forcedSceneIndex];
+  if (!scene) return null;
+  const sceneIndex = familyWeeklySceneCatalog.findIndex((candidateScene) => candidateScene.key === scene.key);
+  const { title, body, key: sceneKey } = scene;
+  const id = `family-weekly-${sceneKey}-${profile.key}`;
+  if (resolvedEvents.includes(id)) return null;
   const positive = preparingForNational || stats.familySupport >= 48;
+  const script = scene.variants[profile.key];
   return {
     id,
     phase: "weekly",
     label: "家庭生活",
     title,
-    body: [body, `${profile.label}的家庭更倾向于：${profile.note}`],
+    body: [body, script.voice],
     concealConsequences: true,
     visualNovel: true,
+    archive: { category: "家庭与教练", group: "家庭日常谈话", clusterKey: `family-weekly-${sceneKey}`, variantKey: profile.key, variantLabel: profile.label, order: sceneIndex + 1, timingNote: "第 8 周后，每隔约七周进入一次家庭事件判定；具体周次随人生种子错开" },
     trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
-    choices: [
-      {
-        id: `family-talk-${targetWeek}`,
-        title: "把最近的真实状态讲清楚，也承认自己还没有答案",
-        preview: "这次谈话会被记住。",
-        result: "谈话没有消灭分歧，却让支持不再只由下一张成绩单决定。",
-        effects: { familySupport: positive ? 2 : 1.2, san: 1, mindset: 0.5, tags: ["与父母认真沟通"] },
-      },
-      {
-        id: `family-plan-${targetWeek}`,
-        title: "拿出训练与常规计划，约定下一次复盘节点",
-        preview: "这次谈话会被记住。",
-        result: "你们把担心变成了可以复查的边界。计划未必完全执行，但争执第一次不再无限延长。",
-        effects: { familySupport: 1.5, academics: 2, san: -0.5, tags: ["家庭共同计划"] },
-      },
-      {
-        id: `family-avoid-${targetWeek}`,
-        title: "说自己很累，今晚先不谈",
-        preview: "这次谈话会被记住。",
-        result: "父母没有继续追问。暂停保护了今晚，也把没有解决的问题留到了以后。",
-        effects: { san: 1.8, familySupport: profile.key === "anxious" ? -0.8 : -0.2 },
-      },
-    ],
+    choices: script.choices.map((choice, index) => ({ id: `family-${sceneKey}-${profile.key}-${index + 1}`, title: choice.title, preview: "", result: choice.result, effects: { ...choice.effects, familySupport: round1((choice.effects.familySupport ?? 0) * (positive ? 1.12 : 1) * profile.volatility), tags: [`家庭谈话:${profile.key}:${sceneKey}`] } })),
   };
 }
 
 function makeFamilyCheckpointEvent(
   targetWeek: number,
   seed: string,
-  profile: (typeof familyProfiles)[number],
+  profile: FamilyProfile,
   stats: PlayerStats,
   storyTags: string[],
   resolvedEvents: string[],
   calendar: ReturnType<typeof calendarFor>,
 ): GameEvent | null {
+  const jitter = (key: string) => (hashSeed(`${seed}-family-checkpoint-${key}`) % 3) - 1;
   const checkpoints = [
-    { week: 9, key: "first-meeting", phase: "第一次家校沟通" },
-    { week: 27, key: "winter-training", phase: "第一次寒假外培前" },
-    { week: calendar.firstExamWeek - 2, key: "province-one", phase: "第一次联赛前" },
+    { week: 9 + jitter("first-meeting"), key: "first-meeting", phase: "第一次家校沟通" },
+    { week: 27 + jitter("winter-training"), key: "winter-training", phase: "第一次寒假外培前" },
+    { week: calendar.firstExamWeek - 2 + jitter("province-one"), key: "province-one", phase: "第一次联赛前" },
     ...(storyTags.includes("第1次省赛-进入省队")
-      ? [{ week: calendar.firstNationalWeek - 3, key: "national-one", phase: "第一次国赛备考中段" }]
+      ? [{ week: calendar.firstNationalWeek - 3 + jitter("national-one"), key: "national-one", phase: "第一次国赛备考中段" }]
       : []),
-    { week: calendar.formalLeaveWeek - 1, key: "formal-leave", phase: "正式停课前" },
-    { week: calendar.secondExamWeek - 2, key: "province-two", phase: "第二次联赛前" },
+    { week: calendar.formalLeaveWeek - 1 + jitter("formal-leave"), key: "formal-leave", phase: "正式停课前" },
+    { week: calendar.secondExamWeek - 2 + jitter("province-two"), key: "province-two", phase: "第二次联赛前" },
     ...(storyTags.includes("第2次省赛-进入省队")
-      ? [{ week: calendar.secondNationalWeek - 3, key: "national-two", phase: "第二次国赛备考中段" }]
+      ? [{ week: calendar.secondNationalWeek - 3 + jitter("national-two"), key: "national-two", phase: "第二次国赛备考中段" }]
       : []),
   ];
-  const checkpoint = checkpoints.find((item) => item.week === targetWeek);
+  const checkpointIndex = checkpoints.findIndex((item) => item.week === targetWeek);
+  const checkpoint = checkpoints[checkpointIndex];
   if (!checkpoint) return null;
-  const id = `family-checkpoint-${checkpoint.key}`;
+  const id = `family-checkpoint-${checkpoint.key}-${profile.key}`;
   if (resolvedEvents.includes(id)) return null;
   const enteredNational =
     (targetWeek > calendar.firstExamWeek &&
@@ -4803,51 +5171,35 @@ function makeFamilyCheckpointEvent(
     "national-two":
       "最后一段国赛备考让全家的时间都跟着机构日程移动。此时争论的重点已经不是要不要学，而是如何别在抵达赛场前先被耗空。",
   };
+  const checkpointScript = familyCheckpointContent[checkpoint.key]?.[profile.key];
+  if (!checkpointScript) return null;
   return {
     id,
     phase: "weekly",
     label: `家庭节点 · ${checkpoint.phase}`,
-    title: lowTrust ? "这次谈话从追问开始。" : "家里把这一阶段的问题重新摆到桌面。",
+    title: lowTrust ? `${checkpointScript.title}，而这次谈话从追问开始。` : checkpointScript.title,
     body: [
       bodies[checkpoint.key],
-      enteredNational
-        ? "进入省队后，家里已经很少再谈立刻退赛；他们更关心实验安全、睡眠和国赛之后的选择。"
-        : `${profile.label}的反应方式仍在影响谈话：${profile.note}`,
+      checkpointScript.voice,
       hasRelationship
-        ? "父母也注意到你和某位同学来往得更密切。那段关系究竟是支撑还是新的压力，暂时没有人能替你回答。"
-        : "这不是一次只讨论成绩的会议，作息、人际关系和你是否仍然愿意继续也被问到了。",
+        ? "父母也注意到你和某位同学来往得更密切。那段关系究竟是支撑还是新的压力，暂时没有人能替你回答；今晚也不会因为大人需要一个结论，就被匆忙归类成应当保留或必须放弃的东西。"
+        : "这不是一次只讨论成绩的会议，作息、人际关系和你是否仍然愿意继续也被问到了。没有人能替你预先证明坚持或退出更正确，谈话只能先把各自愿意承担的部分放到桌面上。",
     ],
     concealConsequences: true,
     visualNovel: true,
+    archive: { category: "家庭与教练", group: "家庭阶段节点", clusterKey: `family-checkpoint-${checkpoint.key}`, variantKey: profile.key, variantLabel: profile.label, order: checkpointIndex + 1, timingNote: `${checkpoint.phase}附近浮动一周；与正式考试周错开` },
     trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
-    choices: [
-      {
-        id: `family-checkpoint-honest-${checkpoint.key}`,
-        title: "把真实进度、常规缺口和最坏打算一起讲清楚",
-        preview: "坦白会改变之后的家庭氛围。",
-        result: "你没有保证拿奖，只解释了自己为何继续、何时复盘、出现什么情况会停下。父母未必完全放心，但不再只能靠猜测判断你。",
-        effects: { familySupport: enteredNational ? 2.4 : 1.6, san: 0.8, mindset: 0.5, tags: ["家庭节点坦白沟通"] },
+    choices: checkpointScript.choices.map((choice, index) => ({
+      id: `family-checkpoint-${checkpoint.key}-${profile.key}-${index + 1}`,
+      title: choice.title,
+      preview: "",
+      result: choice.result,
+      effects: {
+        ...choice.effects,
+        familySupport: round1((choice.effects.familySupport ?? 0) * (enteredNational ? 1.08 : 1)),
+        tags: [`家庭阶段:${checkpoint.key}:${profile.key}`],
       },
-      {
-        id: `family-checkpoint-promise-${checkpoint.key}`,
-        title: "许诺下一次一定用成绩证明自己",
-        preview: "承诺会被记住。",
-        result: "一句‘一定’暂时终止了争论，也把原本属于试卷的随机性变成了你对家里的债。",
-        effects: { familySupport: 2.2, san: -1.2, mindset: -1, tags: ["向父母许下结果承诺"] },
-      },
-      {
-        id: `family-checkpoint-boundary-${checkpoint.key}`,
-        title: "先划清边界：今晚不接受用别人家的孩子比较",
-        preview: "拒绝比较并不等于谈话没有代价。",
-        result: "你终止了最伤人的比较，也让谈话在没有结论时结束。那条边界保护了你，但父母的不安仍会流向下一次成绩。",
-        effects: {
-          familySupport: profile.key === "open" ? -0.4 : -1.4 * profile.volatility,
-          san: 1.4,
-          mindset: 0.5,
-          tags: ["在家庭谈话中划清边界"],
-        },
-      },
-    ],
+    })),
   };
 }
 
@@ -4888,13 +5240,13 @@ function makeExternalDepartureEvent(
     phase: "weekly",
     label: "省内消息",
     title: "一个熟悉的外校名字从下一张榜单上消失了。",
-    body: [scenes[hashSeed(`${seed}-external-retire-copy-${targetWeek}`) % scenes.length], "这不会改变本校在队人数，却会改变你对全省竞争与个人去留的想象。"],
+    body: [scenes[hashSeed(`${seed}-external-retire-copy-${targetWeek}`) % scenes.length], "这不会改变本校在队人数，却会改变你对全省竞争与个人去留的想象。过去只在榜单和联考群里出现的名字忽然有了另一条路线，也提醒你，退赛并不总等于失败，更不会让一个人停在原地。你可以重新计算竞争格局，也可以先承认这条消息带来的复杂感受，而不把别人的离开只解释成自己的机会。"],
     concealConsequences: true,
     visualNovel: true,
     trigger: { earliestWeek: targetWeek, latestWeek: targetWeek },
     choices: [
-      { id: `external-wish-${rival.id}`, title: "通过共同好友转达祝福", preview: "结果稍后揭晓。", result: "消息绕了一圈送到对方那里。你们不熟，却都知道离开赛场不等于从所有人的记忆里消失。", effects: { san: -0.5, mindset: 0.5 } },
-      { id: `external-recalculate-${rival.id}`, title: "重新评估今年省内竞争", preview: "结果稍后揭晓。", result: "少一个强手不等于自己的题会更容易。你更新了对手表，也提醒自己不要把别人的退赛当成奖励。", effects: { reasoning: 0.3, mindset: -0.2 } },
+      { id: `external-wish-${rival.id}`, title: "通过共同好友转达祝福", preview: "", result: "你没有突然以熟人的口吻闯进对方的告别，而是请共同朋友转达一句简短祝福，也说明无需专门回复。消息绕了一圈才送到那里，几天后你收到一句同样克制的谢谢。你们其实并不熟，过去更多只是榜单上的两个名字；可这次转达让彼此都知道，离开赛场并不等于此前的努力无人看见，也不等于从所有人的记忆里一并消失。", effects: { san: -0.5, mindset: 0.5 } },
+      { id: `external-recalculate-${rival.id}`, title: "重新评估今年省内竞争", preview: "", result: "你从对手表中移走那个名字，重新估算各校强手、名额和自己的相对位置，很快发现少一个竞争者并不会让卷子少一道难题，也不能填补你的知识漏洞。名次概率确实发生了细小变化，却不值得被当作别人的退赛送来的奖励。你保留新的判断，同时在表格旁写下一句提醒：只根据仍会参赛的人调整策略，不替离开的人编造失败结局。", effects: { reasoning: 0.3, mindset: -0.2 } },
     ],
   };
 }
@@ -4936,7 +5288,7 @@ function makeRelationshipTurningEvent(
         title: "约定无论谁先退赛，都继续做朋友",
         preview: "开启好友路线 · 同学好感 +4 · SAN +2",
         result:
-          "你们没有说什么煽情的话，只把周末一起吃饭写进了日程。第一次，见面的理由和竞赛无关。",
+          `你们没有说“永远”之类听上去过重的话，只认真约了下周末去校外吃一碗面。${rival.name}把时间写进日历时，还特意备注“禁止带题”。那一刻你忽然觉得轻松：即使下一张名单把两个人分开，这段关系也不必随着竞赛资格一起失效。第一次，见面的理由和任何分数都无关。`,
         effects: {
           peerFavor: 4,
           san: 2,
@@ -4948,7 +5300,7 @@ function makeRelationshipTurningEvent(
         title: "约定下一次模考必须分出胜负",
         preview: "开启宿敌路线 · 思辨 +2 · SAN -1",
         result:
-          "你们把下一张榜单当作约定。竞争从模糊的不安变成了一个具体的人，也因此更锋利。",
+          `你伸出手，要求下一次模考谁也不许用“状态不好”给自己留退路。${rival.name}没有握手，只把你的名字写在新计划表最上方，又在旁边重重画了一道线。从此每一次公布成绩，你们都会先寻找对方的位置；那份说不清的在意被改写成一场有期限的胜负，也因此变得更具体、更锋利。`,
         effects: {
           reasoning: 2,
           san: -1,
@@ -4960,7 +5312,7 @@ function makeRelationshipTurningEvent(
         title: "试着聊一些竞赛之外的事",
         preview: "开启朦胧好感路线 · 心态 +1 · SAN +1",
         result:
-          "话题从班主任、食堂和周末作业慢慢绕远。你还不能确定这种在意意味着什么，只知道今晚不太想让谈话结束。",
+          `你从班主任最近的口头禅聊到食堂最难吃的窗口，又绕到周末作业和小时候做过的傻事。${rival.name}没有像平时那样把每句话拉回题目，反而讲了一个从未在队里提过的家庭小事。你仍不能确定这种在意应当叫什么，也没有急着给关系下定义；只是在保安第二次催促时，你们都同时放慢了收书包的动作，谁也不太想先结束今晚。`,
         effects: {
           mindset: 1,
           san: 1,
@@ -5003,6 +5355,43 @@ function makeRivalStudyAction(rival: Rival): WeeklyAction {
 export default function Home() {
   const [selectedId, setSelectedId] = useState(origins[1].id);
   const [seed, setSeed] = useState("BIO-527184");
+  const storyNpcNames = useMemo(
+    () =>
+      Object.fromEntries(
+        rivals.map((rival) => [rival.id, seededRivalIdentity(rival, seed).name]),
+      ),
+    [seed],
+  );
+  const storyNpcLabels = useMemo(() => {
+    const labels = {
+      reserved: "内敛克制型",
+      warm: "温和照顾型",
+      competitive: "竞争敏锐型",
+      playful: "轻松幽默型",
+      curious: "好奇追问型",
+    } as const;
+    const conflictLabels = {
+      abandonment: "害怕不告而别",
+      burden: "害怕成为负担",
+      achievement: "用成绩确认价值",
+      distance: "习惯用距离自保",
+      caretaking: "习惯承担照顾者",
+      family: "受家庭边界牵制",
+    } as const;
+    const peerRivals = rivals.filter((rival) => rival.scope === "school-peer");
+    return Object.fromEntries(
+      rivals.map((rival) => {
+        const identity = seededRivalIdentity(rival, seed);
+        const peerIndex = peerRivals.findIndex((peer) => peer.id === rival.id);
+        return [
+          rival.id,
+          peerIndex >= 0
+            ? `${labels[identity.personalityKey]} · ${conflictLabels[identity.innerConflictKey]} · NPC变体${peerIndex + 1}`
+            : "NPC风格变体",
+        ];
+      }),
+    );
+  }, [seed]);
   const [name, setName] = useState("林知夏");
   const [playerGender, setPlayerGender] = useState<PlayerGender>("female");
   const [screen, setScreen] = useState<
@@ -5095,6 +5484,11 @@ export default function Home() {
   const [achievementHydrated, setAchievementHydrated] = useState(false);
   const [endingArchive, setEndingArchive] = useState<EndingArchiveRecord[]>([]);
   const [endingArchiveOpen, setEndingArchiveOpen] = useState(false);
+  const [selectedSupplementaryBookId, setSelectedSupplementaryBookId] = useState<string | null>(null);
+  const [realQuestionMode, setRealQuestionMode] = useState(false);
+  const [realQuestionSession, setRealQuestionSession] = useState<{ context: string; questions: RealQuestion[]; index: number; responses: Array<Array<TruthValue | null> | "abandoned" | null>; finished: boolean } | null>(null);
+  const [mistakeBook, setMistakeBook] = useState<Record<string, MistakeRecord>>({});
+  const [mistakeBookOpen, setMistakeBookOpen] = useState(false);
 
   const selected = origins.find((origin) => origin.id === selectedId) ?? origins[0];
 
@@ -5220,6 +5614,8 @@ export default function Home() {
     postCareerInput,
     postCareerState,
     unlockedAchievements,
+    mistakeBook,
+    realQuestionMode,
   });
 
   const readSaveInfo = (raw: string | null): SaveSlotInfo | null => {
@@ -5304,6 +5700,10 @@ export default function Home() {
             module3: data.playerStats.experiment ?? 0,
             module4: data.playerStats.experiment ?? 0,
           },
+        supplementaryBookStudy: {
+          ...defaultSupplementaryBookStudy(),
+          ...(data.playerStats.supplementaryBookStudy ?? {}),
+        },
       });
       setWeekRecords(data.weekRecords ?? []);
       setCurrentWeekMoments(data.currentWeekMoments ?? []);
@@ -5421,6 +5821,8 @@ export default function Home() {
         delete restoredAchievements["province-one"];
       }
       setUnlockedAchievements(restoredAchievements);
+      setMistakeBook(data.mistakeBook ?? {});
+      setRealQuestionMode(data.realQuestionMode ?? false);
       setSaveNotice(`已读取：第 ${data.week} 周`);
       setSaveManagerOpen(false);
     } catch {
@@ -5661,6 +6063,7 @@ export default function Home() {
           },
         ]),
       ),
+      supplementaryBookStudy: defaultSupplementaryBookStudy(),
     });
     setFirstChoice(null);
     setOpeningResolved(false);
@@ -5719,6 +6122,10 @@ export default function Home() {
     setAllowanceNotice(null);
     setPostCareerInput(null);
     setPostCareerState(null);
+    setSelectedSupplementaryBookId(null);
+    setRealQuestionMode(false);
+    setRealQuestionSession(null);
+    setMistakeBook({});
     setAchievementOpen(false);
     setAchievementToast(null);
     setScreen("week");
@@ -5746,6 +6153,7 @@ export default function Home() {
         title: openingEvent.title,
         choice: choice.title,
         result: choice.result,
+        effects: choice.effects,
       },
     ]);
     setOpeningResolved(true);
@@ -5753,6 +6161,7 @@ export default function Home() {
       title: openingEvent.title,
       choice: choice.title,
       result: choice.result,
+      effects: choice.effects,
     });
   };
 
@@ -5861,6 +6270,19 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [keepsakeToast]);
 
+  useEffect(() => {
+    if (!pendingEvent) return;
+    captureStoryEvent(pendingEvent, storyNpcNames);
+    const customized = applyStoryTextOverride(
+      pendingEvent,
+      loadStoryTextOverrides(),
+      storyNpcNames,
+    );
+    if (JSON.stringify(customized) === JSON.stringify(pendingEvent)) return;
+    const timer = window.setTimeout(() => setPendingEvent(customized), 0);
+    return () => window.clearTimeout(timer);
+  }, [pendingEvent, storyNpcNames]);
+
   const addAction = (action: WeeklyAction) => {
     if (!playerStats) return;
     let plannedAction = action;
@@ -5913,6 +6335,16 @@ export default function Home() {
         0
     )
       return;
+    if (plannedAction.id.startsWith("rival-study-")) {
+      const rivalId = plannedAction.id.replace("rival-study-", "");
+      const relation = normalizeRelationship(rivalRelationships[rivalId], seed, rivalId);
+      if (relation.route === "broken-up" && !relation.reunionUsed) {
+        const identity = seededRivalIdentity(rivals.find((item) => item.id === rivalId)!, seed);
+        const reunion = attemptRelationshipReunion(relation, identity.personalityKey, seed, week);
+        setRivalRelationships((current) => ({ ...current, [rivalId]: reunion.relation }));
+        setStoreNotice(reunion.outcome === "reunited" ? `你和${identity.name}在共同学习后决定重新开始。复合只会发生一次。` : reunion.outcome === "secret-contact" ? `你和${identity.name}没有公开复合，却重新恢复了联系。被发现会带来更严重的后果。` : reunion.outcome === "ended" ? `这次共同学习没有让关系回到从前。你们都明白，断了可能就是真的断了。` : null);
+      }
+    }
     setSchedule((current) => [...current, plannedAction]);
     setCareerTab("planner");
   };
@@ -5931,7 +6363,13 @@ export default function Home() {
       [item.id]: (current[item.id] ?? 0) + 1,
     }));
     if (item.purchaseTag) {
-      setStoryTags((current) => [...new Set([...current, item.purchaseTag!])]);
+      setStoryTags((current) => [
+        ...new Set([
+          ...current,
+          item.purchaseTag!,
+          `tag-week:${item.purchaseTag!}:${week}`,
+        ]),
+      ]);
     }
     setActionCounts((current) => ({
       ...current,
@@ -6328,24 +6766,45 @@ export default function Home() {
       week,
       nextStats.competitionNeglectWeeks,
     );
+    const nextSupplementaryBooks = Object.fromEntries(
+      Object.entries(playerStats.supplementaryBookStudy).map(([bookId, state]) => {
+        const nextState = { ...state };
+        const idleWeeks = state.lastStudiedWeek ? week - state.lastStudiedWeek : 0;
+        if (state.unlocked && idleWeeks > 2) {
+          nextState.retention = round1(Math.max(18, state.retention * (state.mastery >= 70 ? 0.95 : 0.965)));
+        }
+        return [bookId, nextState];
+      }),
+    ) as Record<string, SupplementaryBookState>;
+    schedule.forEach((action) => {
+      const effect = action.supplementaryBookEffect;
+      if (!effect) return;
+      const state = nextSupplementaryBooks[effect.bookId];
+      if (!state?.unlocked) return;
+      const softCap = state.mastery < 55 ? 1 : state.mastery < 75 ? 0.55 : state.mastery < 88 ? 0.26 : 0.1;
+      state.mastery = round1(Math.min(94, state.mastery + effect.mastery * adjusted.learningFactor * softCap));
+      state.retention = round1(clamp(state.retention + effect.retention * adjusted.learningFactor));
+      state.lastStudiedWeek = week;
+    });
+    nextStats.supplementaryBookStudy = nextSupplementaryBooks;
     const nextExperimentModules = { ...playerStats.experimentModules };
     schedule.forEach((action) => {
       if (!action.experimentModule) return;
-      const module = action.experimentModule;
-      const current = nextExperimentModules[module];
-      const theory = weightedModuleProgress(updatedBooks.next, module);
+      const moduleKey = action.experimentModule;
+      const current = nextExperimentModules[moduleKey];
+      const theory = weightedModuleProgress(updatedBooks.next, moduleKey);
       const softCap =
         current < 55 ? 1 : current < 72 ? 0.58 : current < 84 ? 0.3 : 0.12;
       const gain =
         (3.4 + theory * 0.032) *
         (0.8 + nextStats.reasoning * 0.0025) *
         adjusted.learningFactor *
-        softCap;
-      nextExperimentModules[module] = round1(
+        softCap + supplementaryExperimentBonus(nextSupplementaryBooks, moduleKey) * 0.035;
+      nextExperimentModules[moduleKey] = round1(
         Math.min(92, current + gain),
       );
       textbooks
-        .filter((book) => book.module === module)
+        .filter((book) => book.module === moduleKey)
         .forEach((book) => {
           const state = updatedBooks.next[book.id];
           state.course = round1(
@@ -6593,39 +7052,47 @@ export default function Home() {
       retiredRivalIds,
     );
     const nextStoryTags = [...new Set([...storyTags, ...weeklyTags])];
-    const teammateDeparture = makeTeammateDepartureEvent(
-      week + 1,
-      seed,
-      activeTeamSize,
-      generated.schoolTeamSize,
-      retiredRivalIds,
-      nextCalendar,
-      nextRelationships,
-      nextStoryTags,
-    );
-    const familyEvent = makeFamilyWeeklyEvent(
-      week + 1,
-      seed,
-      generated.familyProfile,
-      nextStats,
-      nextStoryTags,
-      resolvedEvents,
-    );
-    const familyCheckpoint = makeFamilyCheckpointEvent(
-      week + 1,
-      seed,
-      generated.familyProfile,
-      nextStats,
-      nextStoryTags,
-      resolvedEvents,
-      nextCalendar,
-    );
-    const externalDeparture = makeExternalDepartureEvent(
-      week + 1,
-      seed,
-      retiredRivalIds,
-      resolvedEvents,
-    );
+    const teammateDeparture = nextWeekPhaseForEvents.isTraining
+      ? null
+      : makeTeammateDepartureEvent(
+          week + 1,
+          seed,
+          activeTeamSize,
+          generated.schoolTeamSize,
+          retiredRivalIds,
+          nextCalendar,
+          nextRelationships,
+          nextStoryTags,
+        );
+    const familyEvent = nextWeekPhaseForEvents.isTraining
+      ? null
+      : makeFamilyWeeklyEvent(
+          week + 1,
+          seed,
+          generated.familyProfile,
+          nextStats,
+          nextStoryTags,
+          resolvedEvents,
+        );
+    const familyCheckpoint = nextWeekPhaseForEvents.isTraining
+      ? null
+      : makeFamilyCheckpointEvent(
+          week + 1,
+          seed,
+          generated.familyProfile,
+          nextStats,
+          nextStoryTags,
+          resolvedEvents,
+          nextCalendar,
+        );
+    const externalDeparture = nextWeekPhaseForEvents.isTraining
+      ? null
+      : makeExternalDepartureEvent(
+          week + 1,
+          seed,
+          retiredRivalIds,
+          resolvedEvents,
+        );
     const nextWeeksToProvincial = [
       nextCalendar.firstExamWeek,
       nextCalendar.secondExamWeek,
@@ -6633,7 +7100,7 @@ export default function Home() {
       .filter((examWeek) => examWeek >= week + 1)
       .map((examWeek) => examWeek - (week + 1))
       .sort((a, b) => a - b)[0];
-    const relationshipStory = nextRelationshipStoryEvent({
+    const relationshipStory = nextWeekPhaseForEvents.isTraining ? null : nextRelationshipStoryEvent({
       week: week + 1,
       seed,
       playerGender,
@@ -6660,6 +7127,9 @@ export default function Home() {
       san: nextStats.san,
       coachFavor: nextStats.coachFavor,
       familySupport: nextStats.familySupport,
+      regularPerformance: regularCoverage(nextStats, week + 1) * 100,
+      competitionPerformance: (nextStats.module1 + nextStats.module2 + nextStats.module3 + nextStats.module4) / 4,
+      coachStrictness: selected.stats.schoolSupport >= 80 ? "strict" : selected.stats.schoolSupport < 40 ? "hands-off" : "balanced",
     });
     const relationshipDaily = relationshipStory
       ? null
@@ -6695,7 +7165,7 @@ export default function Home() {
           weeksToProvincial: nextWeeksToProvincial,
           hasNationalAttempt: nextNationalAttempts.length > 0,
         });
-    const personalityDaily = relationshipStory
+    const personalityDaily = relationshipStory || nextWeekPhaseForEvents.isTraining
       ? null
       : nextPersonalityDailyEvent({
           week: week + 1,
@@ -6743,7 +7213,7 @@ export default function Home() {
       activeTeamSize,
       hasNationalAttempt: nextNationalAttempts.length > 0,
     });
-    const achievementStory = nextAchievementStoryEvent({
+    const achievementStory = nextWeekPhaseForEvents.isTraining ? null : nextAchievementStoryEvent({
       week: week + 1,
       seed,
       san: nextStats.san,
@@ -6766,14 +7236,31 @@ export default function Home() {
       ((week + 1) % 2 === 0
         ? personalityDaily ?? relationshipDaily
         : relationshipDaily ?? personalityDaily);
-    const storylineEvent =
-      (week + 1) % 3 === 0
-        ? fantasyStory ?? relationshipEvent ?? familyEvent ?? externalDeparture ?? achievementStory
-        : (week + 1) % 3 === 1
-          ? relationshipEvent ?? familyEvent ?? externalDeparture ?? achievementStory ?? fantasyStory
-          : familyEvent ?? externalDeparture ?? achievementStory ?? fantasyStory ?? relationshipEvent;
+    // 不再按“周数除以三”的固定轮班表决定剧情类型。每类事件先由自己的
+    // 状态前置筛选，再以人生种子在当周候选中排序；重大人物节点仍优先。
+    const storylineCandidates = [
+      relationshipStory,
+      familyEvent,
+      externalDeparture,
+      achievementStory,
+      fantasyStory,
+      relationshipEvent,
+    ].filter((event): event is GameEvent => Boolean(event));
+    const storylineEvent = relationshipStory ??
+      [...storylineCandidates].sort(
+        (left, right) =>
+          seededUnit(`${seed}-storyline-${week + 1}-${right.id}`) -
+          seededUnit(`${seed}-storyline-${week + 1}-${left.id}`),
+      )[0];
+    const supplementaryUnlockEvent = nextWeekPhaseForEvents.isTraining
+      ? null
+      : makeSupplementaryUnlockEvent(
+          week + 1,
+          seed,
+          nextStats,
+        );
     const nextEvent =
-      milestone ?? familyCheckpoint ?? teammateDeparture ?? storylineEvent ?? randomEvent;
+      milestone ?? familyCheckpoint ?? teammateDeparture ?? supplementaryUnlockEvent ?? storylineEvent ?? randomEvent;
     if (
       !retirementFlow &&
       week + 1 >= retirementCooldownUntil &&
@@ -6850,8 +7337,7 @@ export default function Home() {
       }
     }
     if (assessmentItem?.assessment) {
-      setPendingAssessment(
-        generateAssessmentRecap(
+      const recap = generateAssessmentRecap(
           assessmentItem.assessment,
           nextStats,
           seed,
@@ -6862,8 +7348,16 @@ export default function Home() {
           generated.schoolAcademicStrength,
           generated.schoolParticipants,
           activeTeamSize,
-        ),
-      );
+        );
+      setPendingAssessment(recap);
+      if (
+        realQuestionMode &&
+        assessmentItem.assessment.type === "competition" &&
+        (/全国中学生生物学联赛|历年联赛真题测试|全国中学生生物学竞赛.*理论考试/.test(assessmentItem.assessment.title))
+      ) {
+        const questions = drawRealQuestions(`${seed}-${week}-${assessmentItem.assessment.id}`);
+        setRealQuestionSession({ context: assessmentItem.assessment.title, questions, index: 0, responses: Array(questions.length).fill(null), finished: false });
+      }
       setAssessmentChoice(null);
       setQueuedEvent(nextEvent);
       setPendingEvent(null);
@@ -7035,7 +7529,13 @@ export default function Home() {
                   kind: "assessment",
                   title: pendingAssessment.title,
                   choice: assessmentChoiceLabel,
-                  result: effectPreview(effects) || "没有产生即时数值变化",
+                  result:
+                    assessmentChoice === "review"
+                      ? "你把这次考试重新拆回知识漏洞、时间分配与临场判断，完成了本次复盘。"
+                      : assessmentChoice === "rank"
+                        ? "你记下最终名次并收起成绩，没有在这一刻继续追查每一道失分。"
+                        : "你暂时放下试卷，让情绪和身体先从考试状态中恢复。",
+                  effects,
                 },
               ],
             }
@@ -7046,6 +7546,79 @@ export default function Home() {
     setAssessmentChoice(null);
     setPendingEvent(queuedEvent);
     setQueuedEvent(null);
+  };
+
+  const finishRealQuestionSession = () => {
+    if (!realQuestionSession || !pendingAssessment) return;
+    const scored = realQuestionSession.questions.map((question, index) => {
+      const response = realQuestionSession.responses[index];
+      return response === "abandoned" || !response ? null : scoreRealQuestion(question, response);
+    });
+    const counted = scored.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const fraction = counted.length ? counted.reduce((sum, item) => sum + item.fraction, 0) / counted.length : 0;
+    const provincialBonus = round1(fraction * 8);
+    const nationalBonus = round1(fraction * 5);
+    const nextRecap = { ...pendingAssessment };
+    if (nextRecap.provincialAttempt) {
+      const attempt = { ...nextRecap.provincialAttempt };
+      attempt.rawScore = round1(clamp(attempt.rawScore + provincialBonus, 0, PROVINCIAL_MAX_SCORE));
+      attempt.estimateLow = round1(clamp(attempt.estimateLow + provincialBonus, 0, PROVINCIAL_MAX_SCORE));
+      attempt.estimateHigh = round1(clamp(attempt.estimateHigh + provincialBonus, 0, PROVINCIAL_MAX_SCORE));
+      attempt.draftScore = round1(clamp(attempt.draftScore + provincialBonus, 0, PROVINCIAL_MAX_SCORE));
+      attempt.estimateRankLow = rankAgainst(attempt.competitorScores, attempt.estimateHigh);
+      attempt.estimateRankHigh = rankAgainst(attempt.competitorScores, attempt.estimateLow);
+      attempt.draftRank = rankAgainst(attempt.competitorScores, attempt.draftScore);
+      attempt.namedResults = attempt.namedResults.map((result) => ({
+        ...result,
+        rank: result.rank + (attempt.rawScore > result.score && nextRecap.provincialAttempt!.rawScore <= result.score ? 1 : 0),
+      }));
+      nextRecap.provincialAttempt = attempt;
+      setProvincialAttempts((current) => current.map((item) => item.attemptNumber === attempt.attemptNumber ? attempt : item));
+    } else if (nextRecap.nationalAttempt && nextRecap.nationalStage === "theory") {
+      const original = nextRecap.nationalAttempt;
+      const theoryRaw = round1(clamp(original.theoryRaw + nationalBonus));
+      const competitorTheory = original.competitorTheory ?? [];
+      const theoryDistribution = competitorTheory.length ? meanAndSd([...competitorTheory, theoryRaw]) : null;
+      const theoryT = theoryDistribution
+        ? round1(50 + ((theoryRaw - theoryDistribution.mean) / theoryDistribution.sd) * 10)
+        : round1(original.theoryT + nationalBonus * 0.55);
+      const theoryRank = competitorTheory.length ? rankAgainst(competitorTheory, theoryRaw) : original.theoryRank;
+      const qualifiedForExperiment = theoryRank <= NATIONAL_EXPERIMENT_CUTOFF;
+      const finalScore = round1(theoryT * 0.3 + original.experimentT * 0.7);
+      const finalRank = qualifiedForExperiment && original.competitorFinal?.length
+        ? rankAgainst(original.competitorFinal, finalScore)
+        : theoryRank;
+      const attempt = {
+        ...original,
+        theoryRaw,
+        theoryT,
+        theoryRank,
+        qualifiedForExperiment,
+        finalScore,
+        finalRank,
+        medal: nationalMedalForRank(finalRank),
+        namedResults: original.namedResults.map((result) => ({
+          ...result,
+          theoryRank: result.theoryRank + (theoryRaw > result.theoryRaw && original.theoryRaw <= result.theoryRaw ? 1 : 0),
+        })),
+      };
+      nextRecap.nationalAttempt = attempt;
+      setNationalAttempts((current) => current.map((item) => item.attemptNumber === attempt.attemptNumber ? attempt : item));
+    } else if (typeof nextRecap.totalScore === "number" && nextRecap.maxScore === PROVINCIAL_MAX_SCORE) {
+      nextRecap.totalScore = round1(clamp(nextRecap.totalScore + provincialBonus, 0, PROVINCIAL_MAX_SCORE));
+    }
+    setPendingAssessment(nextRecap);
+    setMistakeBook((current) => {
+      const next = { ...current };
+      scored.forEach((result, index) => {
+        if (!result || result.matches === 4) return;
+        const question = realQuestionSession.questions[index];
+        const previous = next[question.id];
+        next[question.id] = { questionId: question.id, recordedAt: new Date().toISOString(), attempts: (previous?.attempts ?? 0) + 1, bestMatches: Math.max(previous?.bestMatches ?? 0, result.matches) };
+      });
+      return next;
+    });
+    setRealQuestionSession({ ...realQuestionSession, finished: true });
   };
 
   const resolvePendingEvent = () => {
@@ -7096,9 +7669,33 @@ export default function Home() {
     nextStats.module2 = weightedModuleProgress(nextStats.bookStudy, "module2");
     nextStats.module3 = weightedModuleProgress(nextStats.bookStudy, "module3");
     nextStats.module4 = weightedModuleProgress(nextStats.bookStudy, "module4");
+    const unlockedSupplementaryId = choice.effects.tags
+      ?.map((tag) => tag.match(/^扩充书目:(.+):已解锁$/)?.[1])
+      .find(Boolean);
+    if (unlockedSupplementaryId) {
+      nextStats.supplementaryBookStudy = {
+        ...nextStats.supplementaryBookStudy,
+        [unlockedSupplementaryId]: {
+          ...(nextStats.supplementaryBookStudy[unlockedSupplementaryId] ?? { mastery: 0, retention: 100, lastStudiedWeek: 0 }),
+          unlocked: true,
+        },
+      };
+    }
     setPlayerStats(nextStats);
     if (choice.effects.tags) {
-      setStoryTags((current) => [...new Set([...current, ...choice.effects.tags!])]);
+      setStoryTags((current) => [
+        ...new Set([
+          ...current,
+          ...choice.effects.tags!,
+          ...choice.effects.tags!.map((tag) => `tag-week:${tag}:${week}`),
+        ]),
+      ]);
+    }
+    const resolvedChain = pendingEvent.id.match(/^chain-(.+)-(\d{2})$/);
+    if (resolvedChain) {
+      setStoryTags((current) => [
+        ...new Set([...current, `chain:${resolvedChain[1]}:${Number(resolvedChain[2])}:week:${week}`]),
+      ]);
     }
     if (
       pendingEvent.id.startsWith("provincial-") &&
@@ -7248,6 +7845,7 @@ export default function Home() {
         title: seedRivalText(pendingEvent.title, seed),
         choice: seedRivalText(choice.title, seed),
         result: seedRivalText(choice.result, seed),
+        effects: choice.effects,
       },
     ]);
     if (forcedSecondFailure) {
@@ -7260,7 +7858,7 @@ export default function Home() {
       setRetirementChoice(null);
     }
     let chainedEvent: GameEvent | undefined;
-    const nationalChainMatch = pendingEvent.id.match(/^national-([12])-(theory-night|experiment-day|rest-day)$/);
+    const nationalChainMatch = pendingEvent.id.match(/^national-([12])-(theory-night|list-revision|experiment-day|rest-day)$/);
     if (nationalChainMatch) {
       const attemptNumber = Number(nationalChainMatch[1]) as 1 | 2;
       const attempt = nationalAttempts.find(
@@ -7271,8 +7869,10 @@ export default function Home() {
         chainedEvent =
           stage === "theory-night"
             ? attempt.qualifiedForExperiment
-              ? makeNationalExperimentEvent(attempt)
+              ? makeNationalListRevisionEvent(attempt)
               : makeNationalRestEvent(attempt)
+            : stage === "list-revision"
+              ? makeNationalExperimentEvent(attempt)
             : stage === "experiment-day"
               ? makeNationalRestEvent(attempt)
               : makeNationalAwardEvent(attempt);
@@ -7282,6 +7882,7 @@ export default function Home() {
       title: pendingEvent.title,
       choice: choice.title,
       result: choice.result,
+      effects: choice.effects,
       ...(chainedEvent
         ? { nextAction: { type: "continue-event", event: chainedEvent } as const }
         : pendingEvent.id === "national-2-award"
@@ -7309,6 +7910,7 @@ export default function Home() {
         title: scene.title,
         choice: choice.title,
         result: choice.result,
+        effects: choice.effects,
       });
       if (retirementFlow.step === 1) {
         const oppositionTags = [
@@ -7358,6 +7960,7 @@ export default function Home() {
         title: scene.title,
         choice: choice.title,
         result: choice.result,
+        effects: choice.effects,
         nextAction: {
           type: "retirement-finish",
           stage: retirementFlow.stage,
@@ -7369,6 +7972,7 @@ export default function Home() {
       title: scene.title,
       choice: choice.title,
       result: choice.result,
+      effects: choice.effects,
     });
     setRetirementCooldownUntil(week + 4);
     setRetirementAttemptCount((current) => current + 1);
@@ -8157,7 +8761,6 @@ export default function Home() {
                     </span>
                     <span>
                       <strong>{choice.title}</strong>
-                      <small>{choice.preview}</small>
                     </span>
                   </button>
                 ))}
@@ -8196,6 +8799,12 @@ export default function Home() {
               你选择了：{seedRivalText(eventResultNotice.choice, seed)}
             </p>
             <p>{seedRivalText(eventResultNotice.result, seed)}</p>
+            {eventResultNotice.effects && effectPreview(eventResultNotice.effects) && (
+              <div className="event-result-effects" aria-label="本次选择的即时数值变化">
+                <span>数值变化</span>
+                <strong>{effectPreview(eventResultNotice.effects)}</strong>
+              </div>
+            )}
             <small>
               有些影响已经进入人物关系与后续事件，但不会全部换算成即时数值公开。
             </small>
@@ -8368,6 +8977,12 @@ export default function Home() {
                         <h3>{moment.title}</h3>
                         {moment.choice && <strong>你的选择：{moment.choice}</strong>}
                         {moment.result && <p>{moment.result}</p>}
+                        {moment.effects && effectPreview(moment.effects) && (
+                          <div className="moment-effects">
+                            <span>数值变化</span>
+                            <strong>{effectPreview(moment.effects)}</strong>
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>
@@ -8497,7 +9112,6 @@ export default function Home() {
                     </span>
                     <span>
                       <strong>{choice.title}</strong>
-                      <small>{choice.preview}</small>
                     </span>
                   </button>
                 ))}
@@ -8511,6 +9125,30 @@ export default function Home() {
                 <span>→</span>
               </button>
             </article>
+          </section>
+        </main>
+      );
+    }
+
+    if (realQuestionSession && pendingAssessment) {
+      const question = realQuestionSession.questions[realQuestionSession.index];
+      const response = realQuestionSession.responses[realQuestionSession.index];
+      const answered = Array.isArray(response) && response.every(Boolean);
+      return (
+        <main className="shell real-question-shell">
+          <header className="topbar"><button className="brand-button">生竞人生</button><div className="steps"><span className="step active">真实题目 {Math.min(realQuestionSession.index + 1, 4)} / 4</span><span className="step">考试结算</span></div><span className="seed-chip">{realQuestionSession.context}</span></header>
+          <section className="real-question-card">
+            {!realQuestionSession.finished && question ? <>
+              <p className="kicker">{question.year} 年联赛 · 第 {question.number} 题 · {specialtyLabels[question.module]}</p>
+              <h1>{question.prompt}</h1>
+              <p className="section-note">分别判断 A-D 为 T（正确）或 F（错误）。4 项重合得满权重，3 项得一半，2 项得 10%，其余为 0；放弃不计入加权。</p>
+              <div className="truth-statement-list">{question.statements.map((statement, index) => <article key={statement}><span>{String.fromCharCode(65 + index)}. {statement}</span><div><button className={Array.isArray(response) && response[index] === "T" ? "selected" : ""} onClick={() => setRealQuestionSession((current) => { if (!current) return current; const responses = [...current.responses]; const values = Array.isArray(responses[current.index]) ? [...responses[current.index] as Array<TruthValue | null>] : [null, null, null, null]; values[index] = "T"; responses[current.index] = values; return { ...current, responses }; })}>T</button><button className={Array.isArray(response) && response[index] === "F" ? "selected" : ""} onClick={() => setRealQuestionSession((current) => { if (!current) return current; const responses = [...current.responses]; const values = Array.isArray(responses[current.index]) ? [...responses[current.index] as Array<TruthValue | null>] : [null, null, null, null]; values[index] = "F"; responses[current.index] = values; return { ...current, responses }; })}>F</button></div></article>)}</div>
+              <div className="real-question-actions"><button className="secondary-button" onClick={() => setRealQuestionSession((current) => { if (!current) return current; const responses = [...current.responses]; responses[current.index] = "abandoned"; return current.index === current.questions.length - 1 ? { ...current, responses } : { ...current, responses, index: current.index + 1 }; })}>放弃本题</button>{realQuestionSession.index < realQuestionSession.questions.length - 1 ? <button className="primary-button" disabled={!answered} onClick={() => setRealQuestionSession((current) => current ? { ...current, index: current.index + 1 } : current)}>下一题 →</button> : <button className="primary-button" disabled={!answered && response !== "abandoned"} onClick={finishRealQuestionSession}>提交全部答案</button>}</div>
+            </> : <>
+              <p className="kicker">ANSWER REVIEW</p><h1>真实题目作答结果</h1>
+              <div className="real-answer-review">{realQuestionSession.questions.map((item, index) => { const user = realQuestionSession.responses[index]; const result = Array.isArray(user) ? scoreRealQuestion(item, user) : null; return <article key={item.id}><strong>{item.year} 年第 {item.number} 题 · {result ? `重合 ${result.matches}/4` : "已放弃"}</strong><p>标准答案：{item.answers.map((value, option) => `${String.fromCharCode(65 + option)}${value}`).join(" · ")}</p>{Array.isArray(user) && <small>你的答案：{user.map((value, option) => `${String.fromCharCode(65 + option)}${value}`).join(" · ")}</small>}</article>; })}</div>
+              <button className="primary-button" onClick={() => setRealQuestionSession(null)}>查看考试结算 →</button>
+            </>}
           </section>
         </main>
       );
@@ -8794,18 +9432,6 @@ export default function Home() {
                     </span>
                     <span>
                       <strong>{seedRivalText(choice.title, seed)}</strong>
-                      <small>
-                        {pendingEvent.concealConsequences
-                          ? "结果暂不公开。人物会记住你怎样回答。"
-                          : pendingEvent.phase !== "exam" &&
-                        hashSeed(
-                          `${seed}-hidden-preview-${pendingEvent.id}-${choice.id}`,
-                        ) %
-                          100 <
-                          45
-                          ? "部分影响不会立即显现；结果还取决于你当前的状态与关系。"
-                          : choice.preview}
-                      </small>
                     </span>
                   </button>
                 ))}
@@ -8883,6 +9509,11 @@ export default function Home() {
                               <strong>{moment.title}</strong>
                               {moment.choice && <span>{moment.choice}</span>}
                               {moment.result && <small>{moment.result}</small>}
+                              {moment.effects && effectPreview(moment.effects) && (
+                                <small className="journal-moment-effects">
+                                  数值变化：{effectPreview(moment.effects)}
+                                </small>
+                              )}
                             </article>
                           ))
                         ) : (
@@ -9273,6 +9904,13 @@ export default function Home() {
                         当前学习效率影响{" "}
                         {formatNumber(relationshipLearningBoost(rivalRelationships) * 100)}%
                       </small>
+                      <button className="relationship-breakup-button" onClick={() => {
+                        const result = breakupRelationship(activePartnerEntry[1], week - activePartnerEntry[1].lastInteractionWeek >= 6 ? "peaceful" : "painful", week);
+                        setRivalRelationships((current) => ({ ...current, [activePartnerEntry[0]]: result.relation }));
+                        setPlayerStats((current) => current ? applyEffects(current, { san: result.san, mindset: result.mindset }) : current);
+                        setStoryTags((current) => [...new Set([...current, "关系:分手", `关系:${activePartnerEntry[0]}:${result.peaceful ? "和平分手" : "主动分手"}`])]);
+                        setAllowanceNotice(result.peaceful ? "你们承认长久失联已经改变了关系，平静地结束了恋爱。" : "你提出分手。关系立即结束，情绪影响已经进入本周状态。复合需要日后再次约对方学习。" );
+                      }}>提出分手<small>立即结束关系；无冷静期</small></button>
                     </div>
                   )}
                   {!activePartnerEntry && bestFriendEntry && (
@@ -9341,6 +9979,12 @@ export default function Home() {
                 行动可以重复选择。排满剩余时间后结算；有些选择的影响要过一段时间才会显现。
               </p>
             </div>
+
+            <section className="real-question-settings">
+              <div><p className="kicker">REVIEWED REAL QUESTIONS</p><h2>真实题目模式</h2><p>在联赛全真模拟、正式联赛与国赛理论考试中追加四模块各一题；放弃的题目不参与加权。</p></div>
+              <div><button className={realQuestionMode ? "selected" : ""} onClick={() => setRealQuestionMode((current) => !current)}>{realQuestionMode ? "已开启" : "开启真实题目"}</button><button onClick={() => setMistakeBookOpen(true)}>错题本 {Object.keys(mistakeBook).length}</button></div>
+            </section>
+            {mistakeBookOpen && <div className="developer-editor-backdrop"><section className="mistake-book-modal" role="dialog" aria-modal="true"><header><div><p className="kicker">MISTAKE BOOK</p><h2>真实题目错题本</h2></div><button onClick={() => setMistakeBookOpen(false)}>×</button></header><div>{Object.values(mistakeBook).map((record) => { const question = reviewedQuestionBank.find((item) => item.id === record.questionId); return question ? <article key={record.questionId}><strong>{question.year} 年第 {question.number} 题 · {specialtyLabels[question.module]}</strong><p>{question.prompt}</p><small>累计错误 {record.attempts} 次 · 最佳重合 {record.bestMatches}/4</small></article> : null; })}{!Object.keys(mistakeBook).length && <p>还没有记录错题。</p>}</div></section></div>}
 
             <section className="book-section">
               <div className="section-heading">
@@ -9540,6 +10184,26 @@ export default function Home() {
               </div>
             </section>
 
+            <section className="action-group supplementary-library">
+              <h2>扩充书目</h2>
+              <p className="section-note">由随机事件解锁。不计入四模块总掌握，只对相关联赛、国赛理论题及指定实验提供局部加权。</p>
+              <div className="book-grid">
+                {supplementaryBooks.filter((book) => book.module === selectedModule).map((book) => {
+                  const state = playerStats?.supplementaryBookStudy[book.id];
+                  const unlocked = Boolean(state?.unlocked);
+                  return <button key={book.id} className={`book-card supplementary ${selectedSupplementaryBookId === book.id ? "selected" : ""} ${unlocked ? "" : "locked"}`} disabled={!unlocked} onClick={() => setSelectedSupplementaryBookId(book.id)}>
+                    <span>{unlocked ? "扩充阅读" : "随机事件解锁"}</span><strong>{unlocked ? book.title : "???"}</strong>
+                    <div><i style={{ width: `${effectiveSupplementaryMastery(state)}%` }}/></div>
+                    <em>{unlocked ? `有效 ${formatNumber(effectiveSupplementaryMastery(state))}% · 记忆 ${formatNumber(state?.retention ?? 100)}%` : "尚未遇见这本书"}</em>
+                  </button>;
+                })}
+              </div>
+              {selectedSupplementaryBookId && playerStats?.supplementaryBookStudy[selectedSupplementaryBookId]?.unlocked && (() => {
+                const book = supplementaryBooks.find((item) => item.id === selectedSupplementaryBookId)!;
+                return <div className="selected-book supplementary-selected"><div><p className="kicker">扩充书目</p><h2>{book.title}</h2><p>{book.description}</p><small>不会增加模块面板掌握；只在抽到相关题目时参与判定。</small></div><div className="book-methods">{(["browse", "research"] as const).map((mode) => { const action = makeSupplementaryBookAction(book.id, mode); return <button className="method-card" key={mode} disabled={remainingTime < action.cost} onClick={() => addAction(action)}><span>{action.cost} 点行动</span><strong>{mode === "browse" ? "简单浏览" : "深入研究"}</strong><small>{action.description}</small><i>掌握 +{action.supplementaryBookEffect?.mastery}% · {effectPreview(action.effects)}</i></button>; })}</div></div>;
+              })()}
+            </section>
+
             {playerStats?.experimentUnlocked && (
               <section className="action-group experiment-actions">
                 <h2>分模块实验训练</h2>
@@ -9723,7 +10387,7 @@ export default function Home() {
           </button>
           {saveNotice && <small>{saveNotice}</small>}
         </div>
-        <span className="version">HUMANITY BUILD · 1.0</span>
+        <span className="version">HUMANITY BUILD · 1.1</span>
       </header>
       {saveDialog}
       {achievementUi}
@@ -9846,6 +10510,50 @@ export default function Home() {
             </button>
           </div>
         </aside>
+      </section>
+
+      <section className="developer-home-tools">
+        <div className="developer-changelog-panel">
+          <div className="section-heading"><div><p className="kicker">DEVELOPER CHANGELOG</p><h2>开发者更新日志</h2></div>{process.env.NODE_ENV !== "production" && <DeveloperStoryEditor npcNames={storyNpcNames} npcLabels={storyNpcLabels} events={[
+            openingEvent,
+            ...Object.values(leaveMilestoneEvents),
+            ...Object.values(trainingMilestoneEvents),
+            ...weeklySocialEvents,
+            ...linkedStoryDeveloperEvents,
+            ...fantasyStoryDeveloperCatalog(seed),
+            ...achievementStoryDeveloperCatalog(seed),
+            ...supplementaryUnlockDeveloperCatalog(),
+            ...retirementDeveloperCatalog(),
+            ...pageFlowDeveloperCatalog(seed),
+            ...rivals
+              .filter((rival) => rival.scope === "school-peer")
+              .flatMap((rival) => {
+                const identity = seededRivalIdentity(rival, seed);
+                const candidate = {
+                  rival: { ...rival, name: identity.name, personality: identity.personality, studyStyle: identity.studyStyle },
+                  gender: identity.gender,
+                  personalityKey: identity.personalityKey,
+                  innerConflictKey: identity.innerConflictKey,
+                };
+                return [
+                  ...relationshipStoryDeveloperCatalog({
+                    seed,
+                    playerGender,
+                    retiredRivalIds: [],
+                    coachFavor: 12,
+                    familySupport: 55,
+                    regularPerformance: 70,
+                    competitionPerformance: 70,
+                    coachStrictness: "balanced",
+                  }, candidate),
+                  ...relationshipDailyDeveloperCatalog(candidate, seed),
+                  ...relationshipPersonalityDeveloperCatalog(candidate, seed),
+                ];
+              }),
+            ...(pendingEvent ? [pendingEvent] : []),
+          ]} />}</div>
+          <div className="changelog-list">{developerChangelog.map((entry) => <article key={entry.version}><header><strong>v{entry.version} · {entry.title}</strong><time>{entry.date}</time></header><ul>{entry.items.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>
+        </div>
       </section>
 
       <footer className="site-note">
@@ -10123,9 +10831,7 @@ function RivalsPage({
 }
 
 function effectPreview(effects: GameEffect) {
-  const parts = effectLabels
-    .filter(([key]) => !key.startsWith("module"))
-    .map(([key, label]) => {
+  const parts = effectLabels.map(([key, label]) => {
       const value = effects[key];
       if (typeof value !== "number" || value === 0) return null;
       return `${label}${value > 0 ? "+" : ""}${formatNumber(value)}`;

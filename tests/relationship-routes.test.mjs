@@ -89,6 +89,33 @@ test("人物线用隐藏后果推进，并能走通朦胧好感到正式恋爱",
   assert(relationshipLearningBoost({ [rival.id]: relation }) > 0);
 });
 
+test("恋爱选项的数值变化与分手、复合及秘密联系后续状态一致", () => {
+  const dating = {
+    ...defaultRelationship("FLOW", rival.id),
+    route: "dating",
+    bond: 62,
+    trust: 58,
+    romance: 64,
+    conflict: 12,
+  };
+
+  const ordinaryDate = applyRelationshipChoice(dating, `rel-date-life-${rival.id}`, 30);
+  assert.equal(ordinaryDate.route, "dating");
+  assert(ordinaryDate.romance - dating.romance < 10, "普通约会不应重复获得确立关系时的巨额加成");
+
+  const breakup = applyRelationshipChoice(dating, `rel-breakup-${rival.id}`, 31);
+  assert.equal(breakup.route, "broken-up");
+  assert.equal(breakup.breakupCount, 1);
+  assert.equal(breakup.lastBreakupWeek, 31);
+  assert.equal(breakup.secretContact, false);
+  assert.equal(breakup.reunionUsed, false);
+
+  const clandestine = applyRelationshipChoice(dating, `rel-secret-contact-${rival.id}`, 32);
+  assert.equal(clandestine.secretContact, true);
+  const disclosed = applyRelationshipChoice(clandestine, `rel-secret-confess-${rival.id}`, 35);
+  assert.equal(disclosed.secretContact, false, "秘密联系被坦白后不应继续显示为未公开状态");
+});
+
 test("十种关系初动文本各自拥有匹配的独立选项", () => {
   const scenes = new Map();
   for (let index = 0; index < 500 && scenes.size < 10; index += 1) {
