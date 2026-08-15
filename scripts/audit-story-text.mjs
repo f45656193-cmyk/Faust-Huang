@@ -13,6 +13,8 @@ const files = [
   "app/relationship-personality-dailies.ts",
   "app/family-weekly-content.ts",
   "app/family-checkpoint-content.ts",
+  "app/causal-life-events.ts",
+  "app/post-career.ts",
 ];
 // 75 字以下通常意味着情节或结果尚未交代完整；75–84 字只作人工复核提示。
 // 不能为了达到偏好长度机械追加套话。
@@ -79,7 +81,7 @@ for (const relative of files) {
   const visit = (node) => {
     if (ts.isPropertyAssignment(node) && ["body", "result"].includes(propertyName(node))) {
       const value = propertyName(node) === "body" ? collectStrings(node.initializer).join("") : collectStrings(node.initializer).join("");
-      if (value) {
+      if (value && value.replace(/\{变量\}/g, "").trim()) {
         const position = source.getLineAndCharacterOfPosition(node.getStart(source));
         records.push({
           kind: propertyName(node),
